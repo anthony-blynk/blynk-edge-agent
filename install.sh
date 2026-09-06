@@ -106,6 +106,27 @@ if ! docker compose -f "$STATE_DIR/docker-compose.yml" pull; then
   (cd "$REPO_DIR" && docker compose build)
 fi
 
+# Confirmed on a RAK LoRaWAN gateway already running its own mosquitto on
+# 1883 for its packet-forwarder/cloud bridge - `docker compose up` would
+# otherwise just fail deep inside with an opaque "address already in use"
+# error, giving no hint that another host port is the actual fix (this same
+# fix is in the README's Troubleshooting section, but better to catch it here
+# than send someone there after a confusing failure). Skips quietly if `ss`
+# isn't available rather than blocking the install over a missing diagnostic
+# tool - not worth failing installation over.
+HOST_MQTT_PORT=$(grep -oE '127\.0\.0\.1:[0-9]+:1883' "$STATE_DIR/docker-compose.yml" | head -1 | cut -d: -f2)
+if [ -n "$HOST_MQTT_PORT" ] && command -v ss >/dev/null 2>&1 && ss -tln 2>/dev/null | grep -q ":$HOST_MQTT_PORT "; then
+  echo "Port $HOST_MQTT_PORT is already in use by something else on this device"
+  echo "(common on gateways already running their own MQTT broker) - mqtt-bridge"
+  echo "needs its own free host port instead (this doesn't affect the actual"
+  echo "Blynk bridge, which talks to mqtt-bridge over Docker's internal network"
+  echo "regardless of this host-side mapping)."
+  read -r -p "Host port for mqtt-bridge, or press Enter to use 18830: " NEW_MQTT_PORT </dev/tty
+  NEW_MQTT_PORT=${NEW_MQTT_PORT:-18830}
+  sed -i "s/127.0.0.1:$HOST_MQTT_PORT:1883/127.0.0.1:$NEW_MQTT_PORT:1883/" "$STATE_DIR/docker-compose.yml"
+  echo "Remapped mqtt-bridge's host port to $NEW_MQTT_PORT in $STATE_DIR/docker-compose.yml"
+fi
+
 echo "Starting stack..."
 docker compose -f "$STATE_DIR/docker-compose.yml" up -d
 

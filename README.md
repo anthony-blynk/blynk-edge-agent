@@ -118,7 +118,7 @@ Confirmed working end-to-end on real hardware for both a Pi 5 and a Compute Modu
 
 ### `port is already allocated` on `mqtt-bridge` (something else already uses 1883)
 
-Confirmed on a device already running Node-RED with its own MQTT broker. The `agent`/`mqtt-bridge` containers still connect to each other over Docker's internal network regardless of any host-side port mapping - the `127.0.0.1:1883:1883` mapping in `docker-compose.yml` only exists for convenience access from outside Docker (e.g. the [Testing the connection](#testing-the-connection) snippet above, or `test/*.py`). Safe to remap without affecting the bridge itself:
+`install.sh` now checks for this itself before starting the stack and prompts for an alternate host port if 1883 is already taken - if you hit this anyway (an existing `docker-compose.yml` from before that check existed, or `ss` wasn't available to detect it), here's the fix. Confirmed on a device already running Node-RED with its own MQTT broker, and separately on a RAK LoRaWAN gateway already running its own mosquitto for its packet-forwarder/AWS IoT Core bridge. The `agent`/`mqtt-bridge` containers still connect to each other over Docker's internal network regardless of any host-side port mapping - the `127.0.0.1:1883:1883` mapping in `docker-compose.yml` only exists for convenience access from outside Docker (e.g. the [Testing the connection](#testing-the-connection) snippet above, or `test/*.py`). Safe to remap without affecting the bridge itself:
 
 ```
 sudo sed -i 's/127.0.0.1:1883:1883/127.0.0.1:18830:1883/' /opt/blynk/docker-compose.yml
