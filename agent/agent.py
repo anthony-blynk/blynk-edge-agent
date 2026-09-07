@@ -137,10 +137,12 @@ acl_file /mosquitto/config/conf.d/acl.rules
 # Ordinary local apps keep exactly the same anonymous, no-credentials-needed
 # access they always had - this file exists solely to close the downlink/#
 # gap above, not to add authentication to the broker in general. Untagged
-# `topic` lines (no preceding `user` line) are mosquitto's own "applies to
-# every client, including anonymous" default; `user <name>` blocks add
-# *additional* permission on top of that default for one specific
-# authenticated identity, they don't take anything away from anyone else.
+# `topic` lines (no preceding `user` line) are mosquitto's own default for
+# *anonymous* clients only - confirmed against mosquitto's own docs and
+# against a real broker log (an authenticated client got zero access from
+# these lines). An authenticated identity gets nothing implicitly; it needs
+# its own `user` block repeating whatever general access it also needs, on
+# top of whatever's special to it.
 ACL_TEMPLATE = """\
 topic readwrite ds/#
 topic readwrite batch_ds
@@ -149,16 +151,33 @@ topic readwrite event/#
 topic readwrite get/#
 topic readwrite meta/#
 
-# Only the bridge's own local-side connection may WRITE downlink/# - this is
-# how genuine Blynk Cloud commands get republished into the local broker.
+# The bridge's own local-side connection needs the same general access as
+# anonymous clients (it subscribes locally to ds/# etc. to forward them up
+# to Blynk Cloud) plus WRITE on downlink/# - how genuine cloud commands get
+# republished into the local broker. It does not need to READ downlink/#
+# itself; it only ever writes what it received from the cloud side.
 user {bridge_username}
+topic readwrite ds/#
+topic readwrite batch_ds
+topic readwrite info/mcu
+topic readwrite event/#
+topic readwrite get/#
+topic readwrite meta/#
 topic write downlink/#
 
-# Only the agent's own connection may READ downlink/# - needed to actually
-# process OTA/reboot/redirect/terminal commands. Deliberately not also
-# given write access here - the agent itself never publishes into this
-# namespace, only Blynk Cloud (via the bridge) does.
+# The agent's own connection needs the same general access as anonymous
+# clients (it publishes its own diagnostics/system-info datastreams) plus
+# READ on downlink/# - needed to actually process OTA/reboot/redirect/
+# terminal commands. Deliberately not also given write access to
+# downlink/# - the agent itself never publishes into that namespace, only
+# Blynk Cloud (via the bridge) does.
 user {agent_username}
+topic readwrite ds/#
+topic readwrite batch_ds
+topic readwrite info/mcu
+topic readwrite event/#
+topic readwrite get/#
+topic readwrite meta/#
 topic read downlink/#
 """
 
@@ -197,6 +216,18 @@ def _write_acl_file(creds: dict) -> None:
     )
     if not ACL_FILE.exists() or ACL_FILE.read_text() != rendered:
         ACL_FILE.write_text(rendered)
+        os.chmod(ACL_FILE, 0o600)
+        try:
+            # eclipse-mosquitto's image always runs as a fixed uid/gid of
+            # 1883 (not configurable) - without this, mosquitto only warns
+            # today ("Future versions will refuse to load this file"), but
+            # a version that enforces it would silently stop applying the
+            # ACL entirely, re-opening the downlink/# gap this file exists
+            # to close. Best-effort: this container may not be able to
+            # chown to an arbitrary uid (e.g. non-Linux dev environments).
+            os.chown(ACL_FILE, 1883, 1883)
+        except (PermissionError, AttributeError, OSError):
+            pass
 
 
 class BlynkConfig:
