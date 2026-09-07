@@ -5,11 +5,13 @@ bridge connection to Blynk). Manages OTA updates to the stack's own
 docker-compose.yml and reacts to a few other downlink control topics.
 """
 
+import asyncio
 import json
 import logging
 import platform
 import time
 import subprocess
+import secrets
 import shutil
 import signal
 import socket
@@ -39,6 +41,21 @@ BACKUP_DIR = CONFIG_BASE / "backups"
 BRIDGE_CONF_DIR = CONFIG_BASE / "mqtt-bridge" / "conf.d"
 BRIDGE_CONF_FILE = BRIDGE_CONF_DIR / "blynk-bridge.conf"
 BRIDGE_HOST_OVERRIDE_FILE = CONFIG_BASE / "bridge_host_override"
+# Deliberately NOT named *.conf - mosquitto.conf's include_dir directive
+# (see mqtt-bridge/mosquitto.conf) blindly loads every *.conf file in this
+# same directory as regular top-level config, and this file's ACL-specific
+# syntax (`user <name>`, bare `topic ...` lines) would collide badly with
+# that - `user` in particular is ALSO mosquitto's own directive for which
+# OS user the broker process runs as, a completely different meaning.
+# Confirmed via mosquitto's own docs: include_dir only loads *.conf files,
+# so a non-.conf name here is enough to stay invisible to that sweep while
+# still being reachable via the explicit acl_file directive below.
+ACL_FILE = BRIDGE_CONF_DIR / "acl.rules"
+# Persisted (not regenerated on every restart) so the bridge conf's
+# "unchanged, don't restart" check in MqttBridge.ensure_current() keeps
+# working, and so the agent's own connection doesn't need reauthorizing
+# every time the container restarts.
+LOCAL_BROKER_CREDS_FILE = CONFIG_BASE / "mqtt-bridge" / "local_broker_creds.env"
 
 MQTT_HOST = os.getenv("MQTT_HOST", "mqtt-bridge")
 MQTT_PORT = int(os.getenv("MQTT_PORT", "1883"))
@@ -68,7 +85,7 @@ TOPIC_INFO = "info/mcu"
 RECONNECT_DELAY = 1
 MAX_RECONNECT_DELAY = 60
 KEEPALIVE = 60
-DIAGNOSTICS_INTERVAL = 60  # seconds between CPU/mem/disk/temp reports while enabled
+DIAGNOSTICS_INTERVAL = 60  # seconds between CPU/mem/disk/temp/uptime/network reports while enabled
 
 # How long the Blynk cloud bridge can stay down before this device falls
 # back into BLE provisioning in place (see BlynkAgent._check_connectivity_watchdog)
@@ -96,6 +113,15 @@ cleansession true
 # broker connection (which stays up regardless of WiFi/cloud state).
 notifications true
 try_private false
+# Authenticates this bridge's LOCAL side against acl.conf below - without
+# this, any anonymous local client (an ordinary app on the same broker)
+# could forge privileged downlink/# commands (a fake OTA, flipping on the
+# remote terminal, a fake reboot) just by publishing to the exact same
+# topic the real bridge uses, since the local broker otherwise has no way
+# to tell a genuine cloud-originated message apart from a local one typed
+# by anything else that can reach it.
+local_username {local_username}
+local_password {local_password}
 
 topic downlink/# in 1
 topic ds/# out 1
@@ -104,7 +130,73 @@ topic info/mcu out 1
 topic event/# out 1
 topic get/# out 1
 topic meta/# out 1
+
+acl_file /mosquitto/config/conf.d/acl.rules
 """
+
+# Ordinary local apps keep exactly the same anonymous, no-credentials-needed
+# access they always had - this file exists solely to close the downlink/#
+# gap above, not to add authentication to the broker in general. Untagged
+# `topic` lines (no preceding `user` line) are mosquitto's own "applies to
+# every client, including anonymous" default; `user <name>` blocks add
+# *additional* permission on top of that default for one specific
+# authenticated identity, they don't take anything away from anyone else.
+ACL_TEMPLATE = """\
+topic readwrite ds/#
+topic readwrite batch_ds
+topic readwrite info/mcu
+topic readwrite event/#
+topic readwrite get/#
+topic readwrite meta/#
+
+# Only the bridge's own local-side connection may WRITE downlink/# - this is
+# how genuine Blynk Cloud commands get republished into the local broker.
+user {bridge_username}
+topic write downlink/#
+
+# Only the agent's own connection may READ downlink/# - needed to actually
+# process OTA/reboot/redirect/terminal commands. Deliberately not also
+# given write access here - the agent itself never publishes into this
+# namespace, only Blynk Cloud (via the bridge) does.
+user {agent_username}
+topic read downlink/#
+"""
+
+
+def _ensure_local_broker_credentials() -> dict:
+    """Generates (once, persisted) two distinct local-broker identities -
+    one for the bridge's own connection, one for the agent's own connection
+    - so acl.conf (see ACL_TEMPLATE) can restrict downlink/# without
+    affecting ordinary local apps, which stay fully anonymous. Not yet
+    confirmed against real hardware - same caveat as everything else in
+    this project that touches the local broker's config for the first
+    time; test that OTA/reboot/terminal downlink commands still actually
+    reach the agent, and that a plain anonymous publish/subscribe from an
+    ordinary local script still works unaffected, before trusting this."""
+    required = ("BRIDGE_LOCAL_USERNAME", "BRIDGE_LOCAL_PASSWORD", "AGENT_LOCAL_USERNAME", "AGENT_LOCAL_PASSWORD")
+    if LOCAL_BROKER_CREDS_FILE.exists():
+        values = dotenv_values(LOCAL_BROKER_CREDS_FILE)
+        if all(values.get(k) for k in required):
+            return values
+    creds = {
+        "BRIDGE_LOCAL_USERNAME": "blynk-bridge",
+        "BRIDGE_LOCAL_PASSWORD": secrets.token_urlsafe(24),
+        "AGENT_LOCAL_USERNAME": "blynk-agent",
+        "AGENT_LOCAL_PASSWORD": secrets.token_urlsafe(24),
+    }
+    LOCAL_BROKER_CREDS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    LOCAL_BROKER_CREDS_FILE.write_text("".join(f"{k}={v}\n" for k, v in creds.items()))
+    return creds
+
+
+def _write_acl_file(creds: dict) -> None:
+    ACL_FILE.parent.mkdir(parents=True, exist_ok=True)
+    rendered = ACL_TEMPLATE.format(
+        bridge_username=creds["BRIDGE_LOCAL_USERNAME"],
+        agent_username=creds["AGENT_LOCAL_USERNAME"],
+    )
+    if not ACL_FILE.exists() or ACL_FILE.read_text() != rendered:
+        ACL_FILE.write_text(rendered)
 
 
 class BlynkConfig:
@@ -188,13 +280,17 @@ class MqttBridge:
 
     def ensure_current(self, server_override: Optional[str] = None, force_restart: bool = False) -> None:
         server = server_override or self.config.effective_server()
+        creds = _ensure_local_broker_credentials()
         rendered = BRIDGE_TEMPLATE.format(
             server=server,
             token=self.config.auth_token,
             template_id=self.config.template_id,
+            local_username=creds["BRIDGE_LOCAL_USERNAME"],
+            local_password=creds["BRIDGE_LOCAL_PASSWORD"],
         )
 
         BRIDGE_CONF_DIR.mkdir(parents=True, exist_ok=True)
+        _write_acl_file(creds)
         unchanged = BRIDGE_CONF_FILE.exists() and BRIDGE_CONF_FILE.read_text() == rendered
         if unchanged and not force_restart:
             return
@@ -627,6 +723,84 @@ def _read_temperature_c() -> Optional[float]:
         return None
 
 
+def _read_uptime_seconds() -> Optional[float]:
+    try:
+        with open("/proc/uptime") as f:
+            return float(f.read().split()[0])
+    except OSError:
+        return None
+
+
+async def _get_network_status() -> dict:
+    """Which interface is actually carrying traffic right now (NetworkManager's
+    own "primary connection" - the one with the best route, not just "some
+    connection exists"), its IP, and signal quality for wifi/cellular (no
+    such concept for ethernet, so that stays None there). Reuses
+    ble_provisioning's own NM/MM D-Bus constants and connection helpers
+    rather than a second way of talking to the same services - agent.py
+    otherwise has no D-Bus code of its own. Not yet confirmed against real
+    hardware - same "treat the first real attempt as an iteration" caveat
+    as everything else in this project that talks to NetworkManager/
+    ModemManager over D-Bus.
+    """
+    from dbus_next.aio import MessageBus
+    from dbus_next.constants import BusType
+
+    bp = ble_provisioning
+    result = {"connection_type": "none", "ip_address": "", "signal_quality": None}
+    bus = await MessageBus(bus_type=BusType.SYSTEM).connect()
+    try:
+        nm = await bp._nm_interface(bus, bp.NM_ROOT_PATH, bp.NM_IFACE)
+        primary_path = await nm.get_primary_connection()
+        if not primary_path or primary_path == "/":
+            return result
+
+        active_iface = await bp._nm_interface(
+            bus, primary_path, "org.freedesktop.NetworkManager.Connection.Active"
+        )
+        devices = await active_iface.get_devices()
+        if not devices:
+            return result
+        device_path = devices[0]
+
+        dev_iface = await bp._nm_interface(bus, device_path, bp.NM_DEVICE_IFACE)
+        device_type = await dev_iface.get_device_type()
+        result["connection_type"] = {
+            bp.NM_DEVICE_TYPE_ETHERNET: "ethernet",
+            bp.NM_DEVICE_TYPE_WIFI: "wifi",
+            bp.NM_DEVICE_TYPE_MODEM: "cellular",
+        }.get(device_type, "other")
+
+        ip4_config_path = await dev_iface.get_ip4_config()
+        if ip4_config_path and ip4_config_path != "/":
+            ip4_iface = await bp._nm_interface(
+                bus, ip4_config_path, "org.freedesktop.NetworkManager.IP4Config"
+            )
+            address_data = await ip4_iface.get_address_data()
+            if address_data:
+                addr = address_data[0].get("address")
+                result["ip_address"] = addr.value if hasattr(addr, "value") else addr
+
+        if result["connection_type"] == "wifi":
+            wireless_iface = await bp._nm_interface(bus, device_path, bp.NM_WIRELESS_IFACE)
+            ap_path = await wireless_iface.get_active_access_point()
+            if ap_path and ap_path != "/":
+                ap_iface = await bp._nm_interface(bus, ap_path, bp.NM_AP_IFACE)
+                result["signal_quality"] = await ap_iface.get_strength()
+        elif result["connection_type"] == "cellular":
+            info = await bp._get_modem_info(bus)
+            modem_path = info.get("modem_path")
+            if modem_path:
+                modem_iface = await bp._nm_interface(bus, modem_path, bp.MM_MODEM_IFACE)
+                signal_quality = await modem_iface.get_signal_quality()
+                # SignalQuality is a (percent: uint, recent: bool) struct.
+                if isinstance(signal_quality, (list, tuple)) and signal_quality:
+                    result["signal_quality"] = signal_quality[0]
+    finally:
+        bus.disconnect()
+    return result
+
+
 class BlynkAgent:
     """MQTT client against the local mqtt-bridge broker only - no TLS, no
     cloud credentials here, those live entirely in the mqtt-bridge."""
@@ -652,6 +826,13 @@ class BlynkAgent:
         self._setup_mqtt_client()
 
     def _setup_mqtt_client(self) -> None:
+        # Authenticates against acl.conf's read-only downlink/# grant - see
+        # _ensure_local_broker_credentials. Ordinary local apps stay fully
+        # anonymous; this is purely so the agent can still receive its own
+        # OTA/reboot/redirect/terminal commands once that topic is no
+        # longer open to anonymous subscribers.
+        creds = _ensure_local_broker_credentials()
+        self.client.username_pw_set(creds["AGENT_LOCAL_USERNAME"], creds["AGENT_LOCAL_PASSWORD"])
         self.client.on_connect = self._on_connect
         self.client.on_message = self._on_message
         self.client.on_disconnect = self._on_disconnect
@@ -911,11 +1092,24 @@ class BlynkAgent:
             "ds/AgentMemUsage": _read_mem_usage_percent(),
             "ds/AgentDiskUsage": _read_disk_usage_percent(),
             "ds/AgentTemperature": _read_temperature_c(),
+            "ds/AgentUptime": _read_uptime_seconds(),
         }
         for topic, value in metrics.items():
             if value is not None:
                 self.client.publish(topic, f"{value:.1f}", qos=1)
-        logger.debug(f"Published diagnostics: {metrics}")
+
+        try:
+            network_status = asyncio.run(_get_network_status())
+        except Exception as e:
+            logger.warning(f"Could not read network status: {e}")
+            network_status = {}
+        self.client.publish("ds/AgentConnectionType", network_status.get("connection_type", "none"), qos=1)
+        if network_status.get("ip_address"):
+            self.client.publish("ds/AgentIPAddress", network_status["ip_address"], qos=1)
+        if network_status.get("signal_quality") is not None:
+            self.client.publish("ds/AgentSignalQuality", str(network_status["signal_quality"]), qos=1)
+
+        logger.debug(f"Published diagnostics: {metrics}, network: {network_status}")
 
     def _diagnostics_loop(self) -> None:
         while not self._shutting_down:

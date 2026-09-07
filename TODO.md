@@ -16,6 +16,12 @@ Keep the proxy itself ignorant of what's being uploaded or why - same generic-in
 
 Feasible pattern: after `_run_docker_compose()` reports success, watch the affected container(s) for N seconds (e.g. poll `docker inspect`'s restart count / running state) - if it crash-loops or exits repeatedly in that window, treat it the same as an apply failure and roll back via the existing backup-restore path in `run_apply_only`. Extends already-existing OTA-handling logic in `agent.py`, doesn't need new infrastructure.
 
+## Show running services/containers on the dashboard
+
+A way to see what's actually running on a device from Blynk - both host `systemctl` services and Docker containers (`docker ps`) - came up while discussing per-device monitoring for a RAK LoRaWAN gateway (wanting to confirm its `basicstation` service and pre-existing `mosquitto` broker were healthy) and, separately, container health in general.
+
+Deliberately out of scope for the core agent's own health metrics: `mqtt-bridge`/`agent` container health isn't worth a separate datastream, since a broken agent or mqtt-bridge already shows up as the device going offline - that's the direct, existing signal. User-added containers are harder - there's no generic way to know which ones matter or what "healthy" means for someone else's app, the same problem already noted for product-specific service monitoring (see the `agent/agent.py`'s _run_terminal_command-based remote-terminal path already covers ad-hoc "what's running" checks for now, e.g. `systemctl list-units --type=service --state=running` or `docker ps`, one-off via the Terminal widget). A first-class dashboard feature for this would need to solve "what's worth showing and how" generically, not just dump raw process/container lists.
+
 ## Diagnostic/support-bundle upload command
 
 A single MQTT-triggered command (e.g. a new downlink topic) that gathers `docker logs`, `docker ps`, and `systemctl status` for the stack's units, then uploads the result somewhere reachable for support purposes - instead of walking a user through the terminal manually every time. Directly depends on the **Blynk HTTP file-upload proxy** idea above (same upload path, generic infrastructure). Precedent: Azure IoT Edge's `UploadSupportBundle` direct method and Memfault's auto-collected coredumps/custom data recordings both solve the same "get diagnostics off a misbehaving device without an interactive session" problem.
