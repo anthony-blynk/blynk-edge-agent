@@ -208,26 +208,32 @@ def _ensure_local_broker_credentials() -> dict:
     return creds
 
 
-def _write_acl_file(creds: dict) -> None:
+def _write_acl_file(creds: dict) -> bool:
+    """Returns True if the file's content actually changed, so callers can
+    tell mosquitto needs a restart to pick it up - mosquitto only reads
+    acl_file at process start, it doesn't hot-reload it the way some of its
+    other config does."""
     ACL_FILE.parent.mkdir(parents=True, exist_ok=True)
     rendered = ACL_TEMPLATE.format(
         bridge_username=creds["BRIDGE_LOCAL_USERNAME"],
         agent_username=creds["AGENT_LOCAL_USERNAME"],
     )
-    if not ACL_FILE.exists() or ACL_FILE.read_text() != rendered:
-        ACL_FILE.write_text(rendered)
-        os.chmod(ACL_FILE, 0o600)
-        try:
-            # eclipse-mosquitto's image always runs as a fixed uid/gid of
-            # 1883 (not configurable) - without this, mosquitto only warns
-            # today ("Future versions will refuse to load this file"), but
-            # a version that enforces it would silently stop applying the
-            # ACL entirely, re-opening the downlink/# gap this file exists
-            # to close. Best-effort: this container may not be able to
-            # chown to an arbitrary uid (e.g. non-Linux dev environments).
-            os.chown(ACL_FILE, 1883, 1883)
-        except (PermissionError, AttributeError, OSError):
-            pass
+    if ACL_FILE.exists() and ACL_FILE.read_text() == rendered:
+        return False
+    ACL_FILE.write_text(rendered)
+    os.chmod(ACL_FILE, 0o600)
+    try:
+        # eclipse-mosquitto's image always runs as a fixed uid/gid of
+        # 1883 (not configurable) - without this, mosquitto only warns
+        # today ("Future versions will refuse to load this file"), but
+        # a version that enforces it would silently stop applying the
+        # ACL entirely, re-opening the downlink/# gap this file exists
+        # to close. Best-effort: this container may not be able to
+        # chown to an arbitrary uid (e.g. non-Linux dev environments).
+        os.chown(ACL_FILE, 1883, 1883)
+    except (PermissionError, AttributeError, OSError):
+        pass
+    return True
 
 
 class BlynkConfig:
@@ -321,14 +327,25 @@ class MqttBridge:
         )
 
         BRIDGE_CONF_DIR.mkdir(parents=True, exist_ok=True)
-        _write_acl_file(creds)
-        unchanged = BRIDGE_CONF_FILE.exists() and BRIDGE_CONF_FILE.read_text() == rendered
-        if unchanged and not force_restart:
+        # mosquitto only reads acl_file (and blynk-bridge.conf) at process
+        # start - a change to either one needs a container restart to take
+        # effect, not just a rewritten file on disk. Confirmed on real
+        # hardware: an ACL-only content change (bridge conf itself
+        # unchanged) was silently ignored by an already-running mosquitto
+        # until this was accounted for here.
+        acl_changed = _write_acl_file(creds)
+        bridge_conf_unchanged = BRIDGE_CONF_FILE.exists() and BRIDGE_CONF_FILE.read_text() == rendered
+        if bridge_conf_unchanged and not acl_changed and not force_restart:
             return
 
-        if unchanged:
+        if not bridge_conf_unchanged:
+            BRIDGE_CONF_FILE.write_text(rendered)
+            logger.info(f"Bridge config updated for {server}, restarting mqtt-bridge")
+        elif acl_changed:
+            logger.info(f"Local broker ACL updated for {server}, restarting mqtt-bridge")
+        else:
             # force_restart=True after a real WiFi (re)connect, even though
-            # the bridge conf content itself didn't change - confirmed on
+            # neither the bridge conf nor the ACL changed - confirmed on
             # real hardware that the mqtt-bridge container keeps whatever DNS
             # server Docker generated its resolv.conf from at container
             # start, and never re-reads the host's current one. Switching
@@ -338,9 +355,6 @@ class MqttBridge:
             # WiFi, were both fine - only a container restart picks up the
             # host's current resolver.
             logger.info(f"Bridge config unchanged for {server}, restarting mqtt-bridge anyway after a WiFi (re)connect")
-        else:
-            BRIDGE_CONF_FILE.write_text(rendered)
-            logger.info(f"Bridge config updated for {server}, restarting mqtt-bridge")
         self._restart_mqtt_bridge()
 
     def apply_redirect(self, new_server: str) -> None:
