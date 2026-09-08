@@ -47,12 +47,12 @@ services:
       - BLYNK_CONFIG_DIR=/opt/blynk
       - MQTT_HOST=mqtt-bridge
       - MQTT_PORT=1883
-      # On by default while this is a demo project (no production fleets
-      # yet) so the remote-terminal feature is obvious and easy to try -
-      # see the README's "Remote terminal" section. This is a capability
-      # gate, not the on/off control: a console Switch widget bound to
-      # AgentTerminalEnabled is still required too. Set to false (or
-      # remove this line) to turn the capability off for a device
+      # On by default for now, so the remote-terminal feature is obvious
+      # and easy to try - see the README's "Remote terminal" section. Turn
+      # this off before deploying to a production fleet. This is a
+      # capability gate, not the on/off control: a console Switch widget
+      # bound to AgentTerminalEnabled is still required too. Set to false
+      # (or remove this line) to turn the capability off for a device
       # entirely - at that point no Switch toggle can turn it back on
       # without an OTA push or a manual edit here.
       - AGENT_TERMINAL_ENABLED=true

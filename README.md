@@ -1,8 +1,10 @@
 # Blynk Edge Agent
 
-Makes connecting a Linux device to Blynk effortless and powerful.
+Turn any Linux device into a remotely manageable Blynk device.
 
-A **Blynk Agent** handles all Blynk communication and control functions, paired with an **MQTT Bridge** that gives every application and process on the device seamless, concurrent access to Blynk over one shared, always-on connection — auth, certificates, and connection complexity handled entirely for you.
+Connect, monitor, provision, and update it through Blynk - while your applications communicate locally over standard MQTT.
+
+A **Blynk Agent** handles Blynk communication and device control, paired with an **MQTT Bridge** that gives your applications a simple local interface to Blynk. Multiple applications can connect concurrently through one shared, always-on Blynk connection - with authentication, certificates, and connection management handled for you.
 
 - **One-command install** — a single script gets a fresh device fully connected to Blynk.
 - **Runs on a diverse range of devices abd OS's** — from Raspberry Pi's, to NVIDIA edge AI platforms, or i.MX8-based industrial gateways. Raspbery Pi OS, Ubuntu, Debian.
@@ -93,13 +95,13 @@ Live health metrics - CPU usage, memory usage, disk usage, temperature, uptime, 
 
 To set it up, create these datastreams for the device's template: the six system-info fields above (String), `AgentCPUUsage`/`AgentMemUsage`/`AgentDiskUsage`/`AgentSignalQuality` (Double, 0-100), `AgentTemperature` (Double, 0-110), `AgentUptime` (Double, seconds - a Label widget with a custom mapping/formatter reads better than raw seconds), `AgentConnectionType`/`AgentIPAddress` (String), and `AgentDiagnosticsEnabled` (Integer, 0-1, with a Switch widget). Add Label/Gauge/History Graph widgets bound to whichever of these you want visible on the dashboard.
 
-## Remote terminal (on by default while this is a demo project)
+## Remote terminal (on by default for now)
 
 Blynk's [Terminal widget](https://docs.blynk.io/en/blynk.console/widgets-console/terminal) can give you a real shell on the device, entirely over the same outbound connection the agent already uses - no inbound port, no VPN, nothing exposed to the network beyond what's already there for Blynk itself. Commands run via `nsenter` into the host's own namespaces, so `pwd`/`ls`/`ps`/etc. reflect the actual device, not just the agent's own container.
 
 This is a real shell with real access, so it's behind two independent switches rather than one:
 
-- **Capability** - a `docker-compose.yml` environment variable (`AGENT_TERMINAL_ENABLED` on the `agent` service), only changeable via an OTA push or a manual edit on the device itself. This is deliberate: compromising your Blynk account credentials alone should never be enough to get a shell on a device that never had this turned on - that requires a second, harder action. **Currently defaults to `true` in the tracked `docker-compose.yml`**, so the feature is obvious and easy to try while this project is still a demo with no production fleets - set it to `false` (or remove the line) for any device you don't want this on at all, since at that point no Switch toggle in Blynk can turn it back on without an OTA push or a manual edit here.
+- **Capability** - a `docker-compose.yml` environment variable (`AGENT_TERMINAL_ENABLED` on the `agent` service), only changeable via an OTA push or a manual edit on the device itself. This is deliberate: compromising your Blynk account credentials alone should never be enough to get a shell on a device that never had this turned on - that requires a second, harder action. **Currently defaults to `true` in the tracked `docker-compose.yml`**, so the feature is obvious and easy to try - set it to `false` (or remove the line) before deploying to a production fleet, or for any device you don't want this on at all, since at that point no Switch toggle in Blynk can turn it back on without an OTA push or a manual edit here.
 - **Session** - a Switch widget bound to an `AgentTerminalEnabled` datastream, for quick on/off without needing an OTA push every time you actually want to use it. This is the one that matters day to day - turn it off when you're not actively using the terminal.
 
 Both need to be on for commands to run - the terminal always replies with a `[terminal disabled: ...]` message explaining which one is off, rather than silently doing nothing either way.
