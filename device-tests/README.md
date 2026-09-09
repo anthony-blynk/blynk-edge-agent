@@ -18,18 +18,13 @@ pytest device-tests -v
 ## What's here
 
 - `test_acl.py` - the local broker's ACL (see the top-level README's Security section): ordinary local traffic (`ds/#` etc.) stays anonymous, `downlink/#` is write-only for the bridge's identity and read-only for the agent's, and both are denied to anonymous clients. Uses MQTT5 explicitly (unlike this project's own client code, which defaults to v3.1.1) specifically so a denied publish/subscribe shows up as a real reason code - under plain MQTT v3.1.1 a denied QoS 1 publish still gets an ordinary-looking PUBACK, indistinguishable from success to the publishing client. Read access is checked via actual message delivery, not the SUBACK reason code - confirmed on real hardware that mosquitto grants the SUBACK for a wildcard subscription like `downlink/#` regardless of ACL, and filters delivery instead.
-- `test_cloud_roundtrip.py` - confirms a local `ds/#` publish actually reaches Blynk Cloud, not just the local broker (`test_acl.py` can't tell you that). **Skipped unless set up first** (see below), since it needs a real datastream and its pin - the HTTP Device API has no by-name lookup the way the MQTT API's `ds/<name>` topics do.
+- `test_cloud_roundtrip.py` - confirms a local `ds/#` publish actually reaches Blynk Cloud, not just the local broker (`test_acl.py` can't tell you that). Needs a real datastream and its pin to do this, since the HTTP Device API has no by-name lookup the way the MQTT API's `ds/<name>` topics do - see setup below.
 
 ### One-time setup for `test_cloud_roundtrip.py`
 
-1. In this device's Blynk template, create a datastream to use as the test's own scratch value (any numeric type, e.g. `AgentSelfTest` as an Integer) - note its virtual pin (e.g. `V50`).
-2. Set two env vars before running pytest:
-   ```
-   export TEST_DATASTREAM_NAME=AgentSelfTest
-   export TEST_DATASTREAM_PIN=V50
-   pytest device-tests -v
-   ```
-   Without `TEST_DATASTREAM_PIN` set, this one test is skipped rather than failed - the rest of the suite (`test_acl.py`) still runs normally.
+In each device's Blynk template, create a datastream named `AgentSelfTest` (any numeric type) at virtual pin `V50` - a fixed convention (same as this project's other `Agent*` datastreams having a fixed documented type), not something to look up or customize per device. No env vars needed for the normal case. If a specific template genuinely can't use pin `V50`, override with `TEST_DATASTREAM_NAME`/`TEST_DATASTREAM_PIN` env vars before running pytest for that device only.
+
+(The obvious alternative - looking the pin up by name automatically - needs Blynk's Platform API `GET /api/v1/organization/template/datastreams`, which requires an account-level Bearer/JWT login, not the device's own token. Putting that on a device would be a real security downgrade versus this project's "devices only ever hold their own per-device token" design, just to avoid a fixed pin convention.)
 
 ## Not yet covered
 

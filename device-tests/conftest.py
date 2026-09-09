@@ -187,13 +187,22 @@ class DeviceAPI:
         return self.get_raw().strip().strip("[]").strip('"')
 
 
+# Fixed convention for this suite's own scratch datastream, the same way
+# the top-level README fixes exact types for the Agent* datastreams rather
+# than discovering them - not something end users are meant to customize
+# per template. The HTTP Device API has no by-name lookup and the account-
+# level API that *does* return a template's name->pin mapping
+# (GET /api/v1/organization/template/datastreams) needs a Bearer/JWT
+# account login, not the device's own token - putting that on a device
+# would be a real security downgrade versus this project's "devices only
+# ever hold their own per-device token" design, just to avoid a fixed pin
+# convention. Override via env var only if a specific device's template
+# genuinely can't use this pin.
+DEFAULT_TEST_DATASTREAM_NAME = "AgentSelfTest"
+DEFAULT_TEST_DATASTREAM_PIN = "V50"
+
+
 @pytest.fixture(scope="session")
 def device_api(blynk_config):
-    pin = os.environ.get("TEST_DATASTREAM_PIN")
-    if not pin:
-        pytest.skip(
-            "Set TEST_DATASTREAM_PIN (the virtual pin of a real datastream in "
-            "this device's template, e.g. V50 - see README.md) to run cloud "
-            "round-trip tests"
-        )
+    pin = os.environ.get("TEST_DATASTREAM_PIN", DEFAULT_TEST_DATASTREAM_PIN)
     return DeviceAPI(blynk_config["BLYNK_SERVER"], blynk_config["BLYNK_AUTH_TOKEN"], pin)
