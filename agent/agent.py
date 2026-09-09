@@ -20,6 +20,7 @@ import os
 import threading
 from pathlib import Path
 from typing import Optional
+from urllib.parse import urlparse
 
 import paho.mqtt.client as mqtt
 from dotenv import dotenv_values
@@ -1071,16 +1072,32 @@ class BlynkAgent:
                 if self._bridge_disconnected_since is not None:
                     self._bridge_disconnected_since = time.time()
 
-    def _handle_redirect(self, json_payload: str) -> None:
-        try:
-            data = json.loads(json_payload)
-        except json.JSONDecodeError as e:
-            logger.error(f"Invalid redirect JSON: {e}")
+    def _handle_redirect(self, payload: str) -> None:
+        payload = payload.strip()
+        if not payload:
             return
 
-        new_server = data.get('host') or data.get('server') or data.get('address')
+        if payload.startswith("{"):
+            try:
+                data = json.loads(payload)
+            except json.JSONDecodeError as e:
+                logger.error(f"Invalid redirect JSON: {e}")
+                return
+            new_server = data.get('host') or data.get('server') or data.get('address')
+        else:
+            # Confirmed on real hardware: Blynk Cloud's actual redirect
+            # payload is a plain `mqtts://host:port` URI (e.g.
+            # "mqtts://fra1.blynk.cloud:8883"), not JSON - the JSON-only
+            # parsing this replaced never matched what's actually sent, so
+            # a real redirect from Blynk Cloud was silently logged as an
+            # error and never applied. The bridge config always hardcodes
+            # the :8883 port itself, so only the hostname is needed here.
+            # urlparse only populates .hostname when a scheme is present -
+            # fall back to treating the whole payload as the host if not.
+            new_server = urlparse(payload).hostname if "://" in payload else payload
+
         if not new_server:
-            logger.error(f"Redirect message missing host/server/address field: {data}")
+            logger.error(f"Redirect message missing a usable host: {payload}")
             return
 
         logger.info(f"Redirect received, moving bridge to {new_server}")
