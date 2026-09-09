@@ -2,12 +2,14 @@
 device itself (needs 127.0.0.1:1883 and the local config files below), not
 in CI. See README.md in this directory for usage."""
 
+import os
 import threading
 import time
 from pathlib import Path
 
 import paho.mqtt.client as mqtt
 import pytest
+import requests
 from dotenv import dotenv_values
 
 BLYNK_ENV = Path("/opt/blynk/blynk.env")
@@ -152,3 +154,41 @@ def agent_client(broker_creds):
     probe = MqttProbe(broker_creds["AGENT_LOCAL_USERNAME"], broker_creds["AGENT_LOCAL_PASSWORD"])
     yield probe
     probe.close()
+
+
+class DeviceAPI:
+    """Thin wrapper over Blynk's Device HTTP(S) API - just enough to read a
+    datastream's current value. Deliberately builds the URL by hand rather
+    than via requests' query-param encoding: Blynk's `get` format is a bare
+    key with no `=value` (e.g. `?token=...&V0`), not an ordinary key=value
+    pair, and the pin/dataStreamId is the only identifier it accepts - the
+    HTTP API has no by-name lookup the way the MQTT API's `ds/<name>` topics
+    do (confirmed against Blynk's own docs)."""
+
+    def __init__(self, server, token, pin):
+        self.base = f"https://{server}/external/api"
+        self.token = token
+        self.pin = pin
+
+    def get_raw(self):
+        response = requests.get(f"{self.base}/get?token={self.token}&{self.pin}", timeout=10)
+        response.raise_for_status()
+        return response.text
+
+    def get_value(self):
+        # The exact successful response shape isn't documented anywhere
+        # seen (only error bodies are) - tolerate a bare value, a quoted
+        # string, or a single-element JSON array, rather than assume one.
+        return self.get_raw().strip().strip("[]").strip('"')
+
+
+@pytest.fixture(scope="session")
+def device_api(blynk_config):
+    pin = os.environ.get("TEST_DATASTREAM_PIN")
+    if not pin:
+        pytest.skip(
+            "Set TEST_DATASTREAM_PIN (the virtual pin of a real datastream in "
+            "this device's template, e.g. V50 - see README.md) to run cloud "
+            "round-trip tests"
+        )
+    return DeviceAPI(blynk_config["BLYNK_SERVER"], blynk_config["BLYNK_AUTH_TOKEN"], pin)
