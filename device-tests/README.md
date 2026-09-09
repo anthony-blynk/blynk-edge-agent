@@ -22,7 +22,7 @@ pytest device-tests -v
 
 ### One-time setup for `test_cloud_roundtrip.py`
 
-In each device's Blynk template, create a datastream named `AgentSelfTest` (any numeric type) at virtual pin `V50` - a fixed convention (same as this project's other `Agent*` datastreams having a fixed documented type), not something to look up or customize per device. No env vars needed for the normal case. If a specific template genuinely can't use pin `V50`, override with `TEST_DATASTREAM_NAME`/`TEST_DATASTREAM_PIN` env vars before running pytest for that device only.
+In each device's Blynk template, create a datastream named `AgentSelfTest` (any numeric type) at virtual pin `V100` - a fixed convention (same as this project's other `Agent*` datastreams having a fixed documented type), not something to look up or customize per device. `V100` is deliberately well clear of the low-numbered pins this project's other `Agent*` datastreams and most templates' own pins tend to use. No env vars needed for the normal case. If a specific template genuinely can't use pin `V100`, override with `TEST_DATASTREAM_NAME`/`TEST_DATASTREAM_PIN` env vars before running pytest for that device only.
 
 (The obvious alternative - looking the pin up by name automatically - needs Blynk's Platform API `GET /api/v1/organization/template/datastreams`, which requires an account-level Bearer/JWT login, not the device's own token. Putting that on a device would be a real security downgrade versus this project's "devices only ever hold their own per-device token" design, just to avoid a fixed pin convention.)
 

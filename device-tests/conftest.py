@@ -199,7 +199,7 @@ class DeviceAPI:
 # convention. Override via env var only if a specific device's template
 # genuinely can't use this pin.
 DEFAULT_TEST_DATASTREAM_NAME = "AgentSelfTest"
-DEFAULT_TEST_DATASTREAM_PIN = "V50"
+DEFAULT_TEST_DATASTREAM_PIN = "V100"
 
 
 @pytest.fixture(scope="session")

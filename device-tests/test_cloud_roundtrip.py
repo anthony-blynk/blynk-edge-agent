@@ -4,7 +4,7 @@ broker -> mqtt-bridge -> TLS -> Blynk Cloud -> stored datastream value)
 actually delivers.
 
 One-time setup per device's Blynk template: create a datastream named
-AgentSelfTest (any numeric type) at virtual pin V50 - see conftest.py's
+AgentSelfTest (any numeric type) at virtual pin V100 - see conftest.py's
 DEFAULT_TEST_DATASTREAM_NAME/PIN and README.md. Override via
 TEST_DATASTREAM_NAME/TEST_DATASTREAM_PIN env vars only if a specific
 device's template genuinely can't use that fixed pin.
