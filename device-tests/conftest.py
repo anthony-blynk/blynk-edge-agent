@@ -1,8 +1,11 @@
 """Shared fixtures for the on-device verification suite - must run on the
-device itself (needs 127.0.0.1:1883 and the local config files below), not
-in CI. See README.md in this directory for usage."""
+device itself (needs the local broker on 127.0.0.1, whatever port that
+actually is - auto-detected from docker-compose.yml, see
+_detect_broker_port - and the local config files below), not in CI. See
+README.md in this directory for usage."""
 
 import os
+import re
 import threading
 import time
 from pathlib import Path
@@ -14,8 +17,29 @@ from dotenv import dotenv_values
 
 BLYNK_ENV = Path("/opt/blynk/blynk.env")
 BROKER_CREDS_ENV = Path("/opt/blynk/mqtt-bridge/local_broker_creds.env")
+COMPOSE_FILE = Path("/opt/blynk/docker-compose.yml")
 BROKER_HOST = "127.0.0.1"
-BROKER_PORT = 1883
+
+
+def _detect_broker_port():
+    # Some devices (e.g. a gateway already running its own broker on 1883
+    # for an unrelated purpose) remap mqtt-bridge's host port - install.sh
+    # itself detects and rewrites this the same way, via the same regex,
+    # when it hits a port collision at install time. Mirror that instead
+    # of hardcoding 1883, so this doesn't need per-device configuration.
+    override = os.environ.get("MQTT_BROKER_PORT")
+    if override:
+        return int(override)
+    try:
+        match = re.search(r"127\.0\.0\.1:(\d+):1883", COMPOSE_FILE.read_text())
+        if match:
+            return int(match.group(1))
+    except OSError:
+        pass
+    return 1883
+
+
+BROKER_PORT = _detect_broker_port()
 CALLBACK_TIMEOUT = 5.0
 # MQTT5 reason codes (see the MQTT v5 spec) - only the ones this suite
 # actually asserts on.

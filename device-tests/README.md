@@ -2,7 +2,7 @@
 
 An on-device verification suite - not CI (there's no real-hardware CI for this project), but a repeatable replacement for manually SSHing in and eyeballing raw mosquitto logs each time a change needs testing on real hardware. Add a test whenever a new feature needs the same kind of real-device verification, rather than doing it ad hoc again.
 
-**Must run on the device itself** - the tests talk to the local broker at `127.0.0.1:1883` and read local config files (`/opt/blynk/blynk.env`, `/opt/blynk/mqtt-bridge/local_broker_creds.env`) that only exist on a device that's actually run this stack.
+**Must run on the device itself** - the tests talk to the local broker at `127.0.0.1` (whatever host port it's actually on - auto-detected from `docker-compose.yml`, same as some gateways needing a remapped port instead of the default `1883`; override with `MQTT_BROKER_PORT` if that detection ever needs it) and read local config files (`/opt/blynk/blynk.env`, `/opt/blynk/mqtt-bridge/local_broker_creds.env`) that only exist on a device that's actually run this stack.
 
 ## Usage
 
@@ -11,9 +11,16 @@ The usual flow when testing an `-rcN` build on a real device:
 ```
 cd ~/blynk-edge-agent   # first time: git clone https://github.com/anthony-blynk/blynk-edge-agent.git ~/blynk-edge-agent
 git pull                # picks up whichever commit's rc you just deployed - version bump and code land in the same commit
-pip install -r device-tests/requirements.txt
-pytest device-tests -v
+
+# first time on this device only:
+sudo apt install -y python3-pip python3-venv
+python3 -m venv ~/device-tests-venv
+~/device-tests-venv/bin/pip install -r device-tests/requirements.txt
+
+~/device-tests-venv/bin/python -m pytest device-tests -v
 ```
+
+A venv, not a bare `pip install`/system Python - confirmed on real hardware that newer Debian/Raspberry Pi OS (Bookworm+) refuses a system-wide `pip install` outright (PEP 668's "externally-managed-environment"). `--break-system-packages` would work around it, but risks whatever else on the device depends on its system Python packages - a venv avoids that entirely and is Debian's own recommended fix.
 
 ## What's here
 
