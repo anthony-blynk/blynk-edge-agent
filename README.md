@@ -132,6 +132,10 @@ Updates go through Blynk OTA, not by re-running `install.sh`. Grab the latest [`
 
 Confirmed working end-to-end on real hardware for both a Pi 5 and a Compute Module 4 (including a Lite/non-wireless CM4 using USB Bluetooth and WiFi dongles instead of onboard radios) - see [`pi-image-builder/README.md`](pi-image-builder/README.md) for the build/flash steps and hardware-specific notes.
 
+## Testing a release
+
+There's no real-hardware CI for this project, so before cutting a release, run [device-tests](device-tests/README.md) against a real test device on the `-rcN` build - a repeatable on-device suite (local broker ACL enforcement, cloud round-trip delivery, connectivity) that replaces manually SSHing in and eyeballing raw mosquitto logs each time. See its README for setup and what's covered.
+
 ## Troubleshooting
 
 ### `port is already allocated` on `mqtt-bridge` (something else already uses 1883)
