@@ -61,7 +61,9 @@ Confirm it actually applied after rebooting normally with `sudo rpi-eeprom-confi
 
 ## Creating a login via the Blynk Terminal
 
-Once a device is provisioned and online, flip the `AgentTerminalEnabled` switch in the app and paste this into the Terminal widget - it creates a new sudo+docker-capable user with a password, in one command, no separate `passwd` prompt needed:
+Unlike the tracked `docker-compose.yml` (which defaults the Blynk Terminal's capability gate, `AGENT_TERMINAL_ENABLED`, to `true` so someone running `install.sh` by hand sees the feature immediately), images built here ship with it set to `false` - `build.sh` flips it as it stages the file (see there for why). A zero-touch image gets flashed and shipped to devices no installer necessarily sets eyes on again, so a remote-shell capability shouldn't be on by default. Turn it on for a specific device first (edit `/opt/blynk/docker-compose.yml` directly, or push it via OTA), then the rest of this section applies.
+
+Once a device is provisioned and online (and `AGENT_TERMINAL_ENABLED` is on), flip the `AgentTerminalEnabled` switch in the app and paste this into the Terminal widget - it creates a new sudo+docker-capable user with a password, in one command, no separate `passwd` prompt needed:
 
 ```
 useradd -m -s /bin/bash -G sudo,docker -p "$(openssl passwd -6 'ReplaceWithAStrongPassword')" newuser

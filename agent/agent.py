@@ -860,7 +860,7 @@ class BlynkAgent:
         self._reconnect_count = 0
         self._shutting_down = False
         self.last_cloud_contact: Optional[float] = None
-        self.diagnostics_enabled = False  # until told otherwise via get/ds on connect
+        self.diagnostics_enabled = True  # on by default until told otherwise via get/ds on connect
         # Mirrors BRIDGE_TEMPLATE's remote_clientid - see the notifications
         # comment there for why this topic tells us the cloud bridge's own
         # connection state, not just this container's local-broker link.

@@ -67,6 +67,15 @@ fi
 echo "Staging blynk.env and docker-compose.yml into the layer..."
 mkdir -p "$LAYER_FILES"
 cp "$REPO_ROOT/docker-compose.yml" "$LAYER_FILES/docker-compose.yml"
+# install.sh's tracked docker-compose.yml defaults AGENT_TERMINAL_ENABLED to
+# true so someone running it manually sees the feature immediately - but a
+# zero-touch image gets shipped/flashed to devices an installer never
+# personally sets eyes on, so a shell capability shouldn't be on by default
+# there. Same fix as install.sh's own per-device prompts (BLYNK_SERVER etc.)
+# not being baked in either - flip this one flag rather than hand-maintain a
+# second copy of the whole file. See README's "Remote terminal" section for
+# how to turn it back on for a given device (a manual edit or an OTA push).
+sed -i 's/AGENT_TERMINAL_ENABLED=true/AGENT_TERMINAL_ENABLED=false/' "$LAYER_FILES/docker-compose.yml"
 cat > "$LAYER_FILES/blynk.env" <<EOF
 BLYNK_SERVER=$BLYNK_SERVER
 BLYNK_TEMPLATE_ID=$BLYNK_TEMPLATE_ID

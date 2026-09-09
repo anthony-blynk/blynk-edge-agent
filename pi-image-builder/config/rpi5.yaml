@@ -36,7 +36,11 @@ device:
   # nsenter'd into the host's own namespaces as root, so once a device is
   # provisioned you can set up SSH access on demand (e.g. `echo
   # 'pi:...' | chpasswd` or append to ~pi/.ssh/authorized_keys) only for
-  # the specific devices you actually need to reach.
+  # the specific devices you actually need to reach. build.sh flips
+  # AGENT_TERMINAL_ENABLED to false for images built here (a zero-touch
+  # image ships to devices no installer necessarily sets eyes on again,
+  # unlike install.sh's own default of true) - turn it back on for a given
+  # device first (manual edit or OTA push) before the terminal is usable.
 
 image:
   layer: image-rpios
