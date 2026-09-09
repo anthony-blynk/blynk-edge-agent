@@ -172,7 +172,12 @@ class DeviceAPI:
 
     def get_raw(self):
         response = requests.get(f"{self.base}/get?token={self.token}&{self.pin}", timeout=10)
-        response.raise_for_status()
+        if response.status_code != 200:
+            # requests' own raise_for_status() drops the body, which is
+            # exactly where Blynk puts the actual reason (e.g. "Wrong pin
+            # format" vs "dataStream doesn't exist") - surface it instead
+            # of a bare status code.
+            raise RuntimeError(f"Device API GET failed ({response.status_code}): {response.text}")
         return response.text
 
     def get_value(self):
