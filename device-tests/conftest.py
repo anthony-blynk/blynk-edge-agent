@@ -156,6 +156,19 @@ def agent_client(broker_creds):
     probe.close()
 
 
+def is_device_connected(server, token):
+    """Whether Blynk Cloud currently sees this device's own persistent
+    connection (i.e. mqtt-bridge's cloud-side session) as up - confirmed on
+    real hardware that this reflects the actual connection, not just
+    whether the HTTP API itself was recently called: stopping mqtt-bridge
+    flips this to false, and it stays false across repeated HTTP calls made
+    while it's down, only returning true again once the bridge reconnects."""
+    response = requests.get(f"https://{server}/external/api/isHardwareConnected?token={token}", timeout=10)
+    if response.status_code != 200:
+        raise RuntimeError(f"Device API isHardwareConnected failed ({response.status_code}): {response.text}")
+    return response.text.strip().lower() == "true"
+
+
 class DeviceAPI:
     """Thin wrapper over Blynk's Device HTTP(S) API - just enough to read a
     datastream's current value. Deliberately builds the URL by hand rather
