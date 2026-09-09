@@ -3,6 +3,7 @@ device itself (needs 127.0.0.1:1883 and the local config files below), not
 in CI. See README.md in this directory for usage."""
 
 import threading
+import time
 from pathlib import Path
 
 import paho.mqtt.client as mqtt
@@ -63,11 +64,18 @@ class MqttProbe:
         if username:
             self.client.username_pw_set(username, password)
         self._connected = threading.Event()
+        self._messages = []
+        self._messages_lock = threading.Lock()
         self.client.on_connect = self._on_connect
+        self.client.on_message = self._on_message
         self.client.connect(BROKER_HOST, BROKER_PORT, keepalive=10)
         self.client.loop_start()
         if not self._connected.wait(CALLBACK_TIMEOUT):
             raise TimeoutError("Never connected to the local broker")
+
+    def _on_message(self, client, userdata, message):
+        with self._messages_lock:
+            self._messages.append(message)
 
     def _on_connect(self, client, userdata, flags, reason_code, properties):
         if _rc_value(reason_code) == RC_SUCCESS:
@@ -100,6 +108,25 @@ class MqttProbe:
         if not done.wait(CALLBACK_TIMEOUT):
             raise TimeoutError(f"No SUBACK for {topic}")
         return result["reason_codes"]
+
+    def wait_for_message(self, timeout=2.0):
+        """Blocks up to `timeout` for any message to arrive on a topic this
+        client has subscribed to; returns the message, or None if nothing
+        arrived. None is the expected, passing outcome when testing that
+        read access was actually denied - mosquitto typically grants the
+        SUBACK for a wildcard subscription like `downlink/#` regardless of
+        ACL (confirmed on real hardware: `subscribe_and_wait` alone reported
+        success even for a client with no read grant), and instead filters
+        which individual messages actually get delivered - so message
+        delivery, not the SUBACK reason code, is the real signal for
+        whether read access exists."""
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            with self._messages_lock:
+                if self._messages:
+                    return self._messages.pop(0)
+            time.sleep(0.05)
+        return None
 
     def close(self):
         self.client.loop_stop()
