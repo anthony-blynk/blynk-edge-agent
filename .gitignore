@@ -10,3 +10,8 @@ pi-image-builder/layers/layer/blynk-agent/files/blynk.env
 pi-image-builder/layers/layer/blynk-agent/files/docker-compose.yml
 # cloned and pinned to a fixed commit by build.sh itself - not vendored
 pi-image-builder/rpi-image-gen/
+
+# device-tests/run_fleet.py's own config - can contain real SSH passwords,
+# must never be committed. Only fleet.example.json (no real credentials)
+# is tracked.
+device-tests/fleet.json

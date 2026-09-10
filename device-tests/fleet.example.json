@@ -1,0 +1,24 @@
+[
+  {
+    "name": "Jetson Orin",
+    "host": "192.168.1.50",
+    "user": "ant",
+    "key_filename": "~/.ssh/id_ed25519"
+  },
+  {
+    "name": "CompuLab IOT-GATE-iMX8",
+    "host": "192.168.1.51",
+    "user": "ant"
+  },
+  {
+    "name": "Pi5",
+    "host": "192.168.1.52",
+    "user": "ant",
+    "password": "REPLACE_ME"
+  },
+  {
+    "name": "CM4",
+    "host": "192.168.1.53",
+    "user": "ant"
+  }
+]
