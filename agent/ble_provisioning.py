@@ -611,8 +611,14 @@ class ProvisioningSession:
         self.service.send({"t": "ifs_start"})
         try:
             nm = await _nm_interface(self.bus, NM_ROOT_PATH, NM_IFACE)
-            sent_any = False
-            for path in await nm.call_get_devices():
+            device_paths = await nm.call_get_devices()
+        except Exception as e:
+            logger.error(f"Failed to reach NetworkManager to enumerate network interfaces: {e}")
+            device_paths = []
+
+        sent_any = False
+        for path in device_paths:
+            try:
                 dev = await _nm_interface(self.bus, path, NM_DEVICE_IFACE)
                 name = NM_DEVICE_TYPE_NAMES.get(await dev.get_device_type())
                 if name is None:
@@ -634,12 +640,19 @@ class ProvisioningSession:
                     }
                     if name == "wifi":
                         msg["scan"] = 1
-                self.service.send(msg)
-                sent_any = True
-            if not sent_any:
-                self.service.send({"t": "if", "name": "eth", "status": "ready"})
-        except Exception as e:
-            logger.error(f"Failed to enumerate network interfaces via NetworkManager: {e}")
+            except Exception as e:
+                # One misbehaving device (confirmed on real hardware: a
+                # laptop where some device's ProxyInterface didn't actually
+                # expose get_hw_address, for reasons not yet root-caused)
+                # used to abort enumeration entirely, silently hiding every
+                # other real interface - including ones that would have
+                # worked fine, like this same laptop's WiFi. Skip just the
+                # one device instead.
+                logger.error(f"Failed to read a NetworkManager device ({path}): {e}")
+                continue
+            self.service.send(msg)
+            sent_any = True
+        if not sent_any:
             self.service.send({"t": "if", "name": "eth", "status": "ready"})
         self.service.send({"t": "ifs_end"})
 

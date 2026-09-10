@@ -680,7 +680,20 @@ def _read_device_model() -> str:
         with open("/proc/device-tree/model") as f:
             return f.read().strip("\x00\n")
     except OSError:
-        return "unknown"
+        pass
+    # x86 (and other non-device-tree) systems have no device-tree at all -
+    # confirmed on real hardware (an x86_64 Ubuntu laptop) that this left
+    # AgentDeviceModel stuck at "unknown" with no fallback. DMI is the x86
+    # equivalent.
+    try:
+        vendor = Path("/sys/class/dmi/id/sys_vendor").read_text().strip()
+        product = Path("/sys/class/dmi/id/product_name").read_text().strip()
+        model = " ".join(part for part in (vendor, product) if part)
+        if model:
+            return model
+    except OSError:
+        pass
+    return "unknown"
 
 
 def _read_os_pretty_name() -> str:
