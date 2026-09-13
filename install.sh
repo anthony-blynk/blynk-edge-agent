@@ -13,7 +13,10 @@ if ! command -v docker >/dev/null 2>&1; then
   sudo usermod -aG docker "$USER"
   echo ""
   echo ""
-  echo "Docker installed. Log out and back in (group membership needs a new session), then re-run:"
+  echo "Docker installed."
+  echo ""
+  echo ""
+  echo "Log out and back in (group membership needs a new session), then re-run:"
   echo "  curl -fsSL $RAW_BASE/install.sh | bash"
   exit 0
 fi
@@ -30,7 +33,10 @@ if ! docker info >/dev/null 2>&1; then
   sudo usermod -aG docker "$USER"
   echo ""
   echo ""
-  echo "Added. Log out and back in (group membership needs a new session), then re-run:"
+  echo "Added."
+  echo ""
+  echo ""
+  echo "Log out and back in (group membership needs a new session), then re-run:"
   echo "  curl -fsSL $RAW_BASE/install.sh | bash"
   exit 0
 fi
