@@ -11,6 +11,8 @@ if ! command -v docker >/dev/null 2>&1; then
   echo "Installing Docker..."
   curl -fsSL https://get.docker.com | sh
   sudo usermod -aG docker "$USER"
+  echo ""
+  echo ""
   echo "Docker installed. Log out and back in (group membership needs a new session), then re-run:"
   echo "  curl -fsSL $RAW_BASE/install.sh | bash"
   exit 0
@@ -26,6 +28,8 @@ if ! docker info >/dev/null 2>&1; then
   # version, not daemon connectivity - so this needs its own check.
   echo "Can't talk to the Docker daemon as this user - adding to the docker group..."
   sudo usermod -aG docker "$USER"
+  echo ""
+  echo ""
   echo "Added. Log out and back in (group membership needs a new session), then re-run:"
   echo "  curl -fsSL $RAW_BASE/install.sh | bash"
   exit 0
