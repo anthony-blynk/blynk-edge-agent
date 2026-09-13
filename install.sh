@@ -119,7 +119,7 @@ if [ -z "$CURRENT_AUTH_TOKEN" ]; then
   case "$KERNEL_VER" in
     6.18.3[45]+rpt-rpi-*)
       echo ""
-      echo "WARNING: this kernel ($KERNEL_VER) has a known Raspberry Pi Bluetooth"
+      echo "*** WARNING ***: this kernel ($KERNEL_VER) has a known Raspberry Pi Bluetooth"
       echo "regression (raspberrypi/linux#7473) that breaks BLE advertising outright -"
       echo "BLE provisioning would fail in an endless loop, since no auth token was"
       echo "entered above."
@@ -129,7 +129,15 @@ if [ -z "$CURRENT_AUTH_TOKEN" ]; then
       if apt list --upgradable 2>/dev/null | grep -q '^linux-image'; then
         read -r -p "A kernel upgrade is available and should include the fix - install it and reboot now? [Y/n] " UPGRADE_KERNEL </dev/tty
         if [ -z "$UPGRADE_KERNEL" ] || [ "$UPGRADE_KERNEL" = "Y" ] || [ "$UPGRADE_KERNEL" = "y" ]; then
-          sudo apt-get upgrade -y
+          # Plain `apt-get upgrade` refuses to install new packages as a
+          # side effect, and Debian/Raspberry Pi OS ship each kernel
+          # version as a separate new package (not an in-place upgrade of
+          # the existing one) - confirmed on real hardware that this left
+          # the actual linux-image-* package "kept back" while 122
+          # unrelated packages upgraded fine, so the reboot below came
+          # back on the exact same broken kernel. dist-upgrade is allowed
+          # to pull in the new kernel package, which is the whole point.
+          sudo apt-get dist-upgrade -y
           echo ""
           echo ""
           echo "Kernel upgraded. Reboot, then re-run this script to finish setup:"
