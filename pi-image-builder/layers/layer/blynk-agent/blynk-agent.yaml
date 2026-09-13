@@ -55,6 +55,17 @@ mmdebstrap:
           printf '\n[GATT]\nChannels = 1\n' >> "$BLUEZ_CONF"
         fi
       fi
+    # Same fix as install.sh, see its own comment for the full explanation -
+    # stops NetworkManager auto-DHCPing/routing a cellular modem's raw net
+    # interface (which our own code never uses; cellular goes over a PPP
+    # "gsm" connection on the modem's AT port instead), confirmed on real
+    # hardware to otherwise black-hole roughly half of all outbound traffic
+    # via a competing equal-metric default route. No udevadm trigger needed
+    # here (nothing is plugged in during a build) - this just needs to be in
+    # place before first real boot.
+    - |-
+      set -eu
+      printf '%s\n' 'SUBSYSTEM=="net", ACTION=="add|change", ENV{ID_NET_DRIVER}=="cdc_ncm|cdc_ether|cdc_mbim|qmi_wwan|rndis_host", ENV{NM_UNMANAGED}="1"' > "$1/etc/udev/rules.d/90-blynk-modem-net-unmanaged.rules"
     # Pre-cache both images as docker-archive tarballs, reading the actual
     # image:tag references from the staged docker-compose.yml rather than
     # hardcoding a version here - always matches whatever was checked out

@@ -187,3 +187,14 @@ This shows up two different ways depending on the device's BlueZ version:
 - **Current BlueZ (already defaults to EATT off)**: confirmed on a Raspberry Pi 5 running BlueZ 5.82 - the `Channels = 1` fix above is already the default here and doesn't change anything, yet the same hang still happened, via a plain (EATT-independent) ATT `Invalid Handle` error confirmed with `sudo btmon` while writing to a since-moved notification descriptor. There's no config fix for this case - the phone's own cached pairing is simply stale.
 
 Either way, forget the device's existing Bluetooth pairing on the phone (Settings → Bluetooth → forget "Blynk Device-...") before retrying, so it can't reuse any handles cached from before.
+
+### Cellular modem plugged in, but device intermittently drops off the network entirely (even over Ethernet/WiFi)
+
+Confirmed on a Raspberry Pi 5 with a SIM7080: many USB cellular modems expose a raw "net" interface (driver `cdc_ncm`, `cdc_ether`, `cdc_mbim`, `qmi_wwan`, or `rndis_host`) alongside their AT command port - this project's own cellular support never uses it (`ble_provisioning.py`'s `_connect_cellular` only ever activates a NetworkManager `gsm`/PPP connection over the AT port), but left alone, NetworkManager treats that raw interface like any other newly-appeared Ethernet device: it auto-DHCPs it and gives it a default route at the same metric as your real connection. With two default routes at equal metric, roughly half of all outbound traffic can get silently black-holed through the modem's own (non-functional, for our purposes) route - `ping`/`docker pull`/anything else shows intermittent ~50% loss or timeouts, even though Ethernet/WiFi and the wider network are both completely healthy.
+
+`install.sh` and `pi-image-builder` both now add a udev rule (`/etc/udev/rules.d/90-blynk-modem-net-unmanaged.rules`) marking these interfaces `NM_UNMANAGED` so this can't happen - only a device set up before that fix landed would still hit it. To confirm this is what you're seeing: `ip route show default` shows two entries, one via an interface like `eth1` you didn't configure yourself; unplugging the modem and rebooting removes it and restores normal connectivity immediately. To apply the fix manually:
+```
+echo 'SUBSYSTEM=="net", ACTION=="add|change", ENV{ID_NET_DRIVER}=="cdc_ncm|cdc_ether|cdc_mbim|qmi_wwan|rndis_host", ENV{NM_UNMANAGED}="1"' | sudo tee /etc/udev/rules.d/90-blynk-modem-net-unmanaged.rules
+sudo udevadm control --reload-rules
+sudo udevadm trigger --subsystem-match=net
+```

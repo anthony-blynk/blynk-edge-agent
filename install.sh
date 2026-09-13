@@ -123,6 +123,31 @@ if [ -f "$BLUEZ_CONF" ] && ! grep -q "^Channels = 1" "$BLUEZ_CONF"; then
   echo "Disabled BLE EATT (main.conf [GATT] Channels = 1) - avoids a known BlueZ issue where repeated BLE provisioning can silently break (see README Troubleshooting)"
 fi
 
+# Cellular USB modems (SIMCom SIM7070/7080/7600 and similar) present a raw
+# "net" interface (cdc_ncm/cdc_ether/cdc_mbim/qmi_wwan/rndis_host) alongside
+# their AT command ports - ble_provisioning.py's _connect_cellular never
+# touches it, it only ever activates a NetworkManager "gsm" (PPP-over-AT)
+# connection. Left alone, NetworkManager treats that raw net interface like
+# any other newly-appeared Ethernet device: it auto-DHCPs it and activates
+# it with a default route at the same metric as the real connection.
+# Confirmed on real hardware (a Pi 5 with a SIM7080) that this silently
+# black-holed roughly half of all outbound traffic - two default routes at
+# equal metric competing for real traffic - despite Ethernet/WiFi being
+# perfectly healthy on their own. Marking these interfaces NM_UNMANAGED
+# stops NetworkManager from ever touching them. Mirrors the structure of
+# NetworkManager's own shipped data/85-nm-unmanaged.rules (which has no
+# rule for this case at all - confirmed by reading it upstream), just as a
+# separate file per its own header's instructions ("place a file in
+# /etc/udev/rules.d" rather than editing the shipped one).
+UDEV_RULE=/etc/udev/rules.d/90-blynk-modem-net-unmanaged.rules
+UDEV_RULE_CONTENT='SUBSYSTEM=="net", ACTION=="add|change", ENV{ID_NET_DRIVER}=="cdc_ncm|cdc_ether|cdc_mbim|qmi_wwan|rndis_host", ENV{NM_UNMANAGED}="1"'
+if [ ! -f "$UDEV_RULE" ] || [ "$(cat "$UDEV_RULE" 2>/dev/null)" != "$UDEV_RULE_CONTENT" ]; then
+  echo "$UDEV_RULE_CONTENT" | sudo tee "$UDEV_RULE" >/dev/null
+  sudo udevadm control --reload-rules
+  sudo udevadm trigger --subsystem-match=net
+  echo "Added udev rule to stop NetworkManager auto-configuring cellular modems' raw net interfaces (see README Troubleshooting)"
+fi
+
 echo "Pulling images..."
 if ! docker compose -f "$STATE_DIR/docker-compose.yml" pull; then
   echo "Pull failed, cloning repo to build locally instead..."
