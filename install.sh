@@ -75,8 +75,7 @@ if [ ! -f "$STATE_DIR/blynk.env" ]; then
   # prompts actually work rather than silently fail or hang.
   echo "Enter this device's Blynk credentials:"
   echo "(leave server/auth token blank to provision this device later via"
-  echo "the Blynk app over Bluetooth - template ID is still required now,"
-  echo "it identifies the product itself rather than something the app hands over)"
+  echo "the Blynk app over Bluetooth - template ID is still required now)"
   read -r -p "BLYNK_SERVER (e.g. lon1.blynk.cloud), or leave blank: " BLYNK_SERVER </dev/tty
   read -r -p "BLYNK_TEMPLATE_ID: " BLYNK_TEMPLATE_ID </dev/tty
   read -r -s -p "BLYNK_AUTH_TOKEN, or leave blank: " BLYNK_AUTH_TOKEN </dev/tty
@@ -130,7 +129,7 @@ if [ -f "$BLUEZ_CONF" ] && ! grep -q "^Channels = 1" "$BLUEZ_CONF"; then
     printf '\n[GATT]\nChannels = 1\n' | sudo tee -a "$BLUEZ_CONF" >/dev/null
   fi
   sudo systemctl restart bluetooth
-  echo "Disabled BLE EATT (main.conf [GATT] Channels = 1) - avoids a known BlueZ issue where repeated BLE provisioning can silently break (see README Troubleshooting)"
+  # Disabled BLE EATT (main.conf [GATT] Channels = 1) - see README Troubleshooting
 fi
 
 # Cellular USB modems (SIMCom SIM7070/7080/7600 and similar) present a raw
@@ -155,7 +154,7 @@ if [ ! -f "$UDEV_RULE" ] || [ "$(cat "$UDEV_RULE" 2>/dev/null)" != "$UDEV_RULE_C
   echo "$UDEV_RULE_CONTENT" | sudo tee "$UDEV_RULE" >/dev/null
   sudo udevadm control --reload-rules
   sudo udevadm trigger --subsystem-match=net
-  echo "Added udev rule to stop NetworkManager auto-configuring cellular modems' raw net interfaces (see README Troubleshooting)"
+  # Added udev rule to stop NetworkManager auto-configuring cellular modems' raw net interfaces - see README Troubleshooting
 fi
 
 echo "Pulling images..."
@@ -197,8 +196,12 @@ fi
 echo "Starting stack..."
 docker compose -f "$STATE_DIR/docker-compose.yml" up -d
 
-echo "Done. Check status with: docker compose -f $STATE_DIR/docker-compose.yml ps"
-echo
+echo ""
+echo ""
+echo "Installed successfully."
+echo ""
+echo "Check status with: docker compose -f $STATE_DIR/docker-compose.yml ps"
+echo ""
 echo "This only ever runs once - from here, updates go through Blynk OTA."
 echo "When a new version is available, fetch the latest docker-compose.yml:"
 echo "  $RAW_BASE/docker-compose.yml"
