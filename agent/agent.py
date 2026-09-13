@@ -806,7 +806,7 @@ async def _get_network_status() -> dict:
     from dbus_next.constants import BusType
 
     bp = ble_provisioning
-    result = {"connection_type": "none", "ip_address": "", "signal_quality": None, "access_technology": None}
+    result = {"connection_type": "none", "ip_address": "", "signal_quality": None}
     bus = await MessageBus(bus_type=BusType.SYSTEM).connect()
     try:
         nm = await bp._nm_interface(bus, bp.NM_ROOT_PATH, bp.NM_IFACE)
@@ -856,7 +856,15 @@ async def _get_network_status() -> dict:
                 if isinstance(signal_quality, (list, tuple)) and signal_quality:
                     result["signal_quality"] = signal_quality[0]
                 access_tech = await modem_iface.get_access_technologies()
-                result["access_technology"] = bp._format_access_technologies(access_tech)
+                tech_name = bp._format_access_technologies(access_tech)
+                # Appended into connection_type itself rather than a
+                # separate datastream - deliberate, not the more usual
+                # pattern this file uses elsewhere (signal_quality/
+                # ip_address are separate fields): the console dashboard
+                # this is displayed on has layout constraints that make
+                # one more widget costly right now.
+                if tech_name and tech_name != "unknown":
+                    result["connection_type"] = f"cellular ({tech_name})"
     finally:
         bus.disconnect()
     return result
@@ -1195,8 +1203,6 @@ class BlynkAgent:
             self.client.publish("ds/AgentIPAddress", network_status["ip_address"], qos=1)
         if network_status.get("signal_quality") is not None:
             self.client.publish("ds/AgentSignalQuality", str(network_status["signal_quality"]), qos=1)
-        if network_status.get("access_technology"):
-            self.client.publish("ds/AgentAccessTechnology", network_status["access_technology"], qos=1)
 
         logger.debug(f"Published diagnostics: {metrics}, network: {network_status}")
 
