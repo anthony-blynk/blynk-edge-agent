@@ -100,6 +100,53 @@ else
   echo "$STATE_DIR/blynk.env already exists, leaving it alone"
 fi
 
+CURRENT_AUTH_TOKEN=$(grep '^BLYNK_AUTH_TOKEN=' "$STATE_DIR/blynk.env" | cut -d= -f2-)
+if [ -z "$CURRENT_AUTH_TOKEN" ]; then
+  # BLE provisioning is about to run (no auth token stored) - check for a
+  # known Raspberry Pi kernel regression that breaks BLE advertising
+  # outright (raspberrypi/linux#7473: MGMT "Add Extended Advertising Data"
+  # rejected with Invalid Parameters on 6.18.34/6.18.35, fixed by
+  # 58d810354de1b, first shipped in 6.18.36). Confirmed on real hardware (a
+  # Pi 5) that this makes the agent container loop "Failed to register
+  # advertisement" forever without ever failing hard - this script would
+  # otherwise report success while BLE provisioning is silently doomed, so
+  # it needs catching before the stack even starts, not left to be found
+  # via a confusing docker logs dig afterward.
+  KERNEL_VER=$(uname -r)
+  case "$KERNEL_VER" in
+    6.18.3[45]+rpt-rpi-*)
+      echo ""
+      echo "WARNING: this kernel ($KERNEL_VER) has a known Raspberry Pi Bluetooth"
+      echo "regression (raspberrypi/linux#7473) that breaks BLE advertising outright -"
+      echo "BLE provisioning would fail in an endless loop, since no auth token was"
+      echo "entered above."
+      echo ""
+      echo "Checking whether a fixed kernel is available via apt..."
+      sudo apt-get update -qq
+      if apt list --upgradable 2>/dev/null | grep -q '^linux-image'; then
+        read -r -p "A kernel upgrade is available and should include the fix - install it and reboot now? [Y/n] " UPGRADE_KERNEL </dev/tty
+        if [ -z "$UPGRADE_KERNEL" ] || [ "$UPGRADE_KERNEL" = "Y" ] || [ "$UPGRADE_KERNEL" = "y" ]; then
+          sudo apt-get upgrade -y
+          echo ""
+          echo ""
+          echo "Kernel upgraded. Reboot, then re-run this script to finish setup:"
+          echo "  curl -fsSL $RAW_BASE/install.sh | bash"
+          sudo reboot
+          exit 0
+        fi
+      fi
+      echo "No apt kernel upgrade available (or upgrade declined) - pull the fix"
+      echo "directly instead:"
+      echo "  sudo rpi-update"
+      echo "  sudo reboot"
+      echo "(or roll back to a known-good kernel - see the README Troubleshooting"
+      echo "section for exact commands). Re-run this script afterwards:"
+      echo "  curl -fsSL $RAW_BASE/install.sh | bash"
+      exit 1
+      ;;
+  esac
+fi
+
 # Confirmed on a CompuLab IOT-GATE-iMX8 running an older BlueZ: EATT
 # (Enhanced ATT) being active means bluez_peripheral's lack of stable GATT
 # attribute handles across container restarts can trigger Android's Robust
