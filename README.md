@@ -52,7 +52,7 @@ flowchart LR
 - That local broker is only reachable on the device itself (`127.0.0.1:1883`) - nothing outside the device can connect to it.
 - **agent** subscribes to Blynk's downlink control topics: `downlink/ota/json` (downloads, validates, and applies a new `docker-compose.yml`, with automatic rollback on failure), `downlink/ping`, `downlink/reboot`, `downlink/redirect`, and `downlink/reconfigure`.
 - You can add your own service(s) to `docker-compose.yml` alongside mqtt-bridge and agent, and/or just run your own programs directly on the device (outside Docker) - either way, they talk to the local broker, which is already bridged to Blynk. See `test/` for minimal pub/sub examples.
-- Blynk's own topics (`ds/#`, `downlink/#`, etc. - see [the MQTT API docs](https://docs.blynk.io/en/blynk.cloud-mqtt-api/device-mqtt-api/topic-structure)) are what actually reach Blynk Cloud through the bridge. Your apps are free to use any other topics on the local broker too - those just stay local and never interact with Blynk at all.
+- Blynk's own topics (`ds/#`, `downlink/#`, etc. - see [the Blynk MQTT API docs](https://docs.blynk.io/en/blynk.cloud-mqtt-api/device-mqtt-api/topic-structure)) are what actually reach Blynk Cloud through the bridge. Your apps are free to use any other topics on the local broker too - those just stay local and never interact with Blynk at all.
 
 ## Install
 
@@ -77,7 +77,7 @@ Then you can publish to the Blynk datastream with:
 python3 -c "import paho.mqtt.publish as publish; publish.single('ds/Test', payload='42', hostname='localhost', port=1883, qos=1)"
 ```
 
-Create a datastream named `Test` (type Integer) for the device's template first, or swap in any datastream you've already created - port `1883` assumes nothing else on the device is already using it (see [Troubleshooting](#troubleshooting) below if it is). See `test/` for more complete pub/sub examples.
+Create a datastream named `Test` (type Integer) for the device's template first, or swap in any datastream you've already created. See `test/` for more complete pub/sub examples.
 
 ## WiFi provisioning
 
@@ -110,7 +110,7 @@ To set it up, create two datastreams for the device's template - `AgentTerminal`
 
 ## Security
 
-This is a security-focused project, not just a wiring exercise - the local broker and the OTA path are both treated as trust boundaries:
+This is a security-focused project - the local broker and the OTA path are both treated as trust boundaries:
 
 - **The local broker stays fully anonymous for ordinary traffic, but `downlink/#` is locked down.** Only mqtt-bridge's own local connection (write) and the agent's own local connection (read) can touch it, each authenticating with its own per-device credentials generated on first boot and never shared with anything else on the device. Without this, any local process could forge a fake OTA/reboot/terminal command just by publishing to the same topic the real bridge uses. Every other local topic (`ds/#`, `event/#`, etc.) stays anonymous - your own apps never need credentials to use Blynk.
 - **Only mqtt-bridge ever holds the real Blynk auth token.** The agent, your own apps, and anything else on the device only ever talk to the local broker - never the actual Blynk credentials.
@@ -120,7 +120,7 @@ This is a security-focused project, not just a wiring exercise - the local broke
 - **Pre-baked images ship with Remote Terminal off, not on** - see [pi-image-builder](pi-image-builder/). A zero-touch image gets flashed and shipped to devices no installer necessarily sets eyes on again, so a live shell capability shouldn't default to on the way it does for `install.sh`'s manual, single-device setup. No baked-in password or SSH key either - one shared secret across an entire fleet would be a single point of compromise; the per-device Blynk Terminal is the actual answer, opt-in per device.
 - **OTA pushes are validated before being applied**, and roll back automatically if the new stack fails to come up - a malformed or broken `docker-compose.yml` doesn't get to replace a device's working config.
 
-This is a young, actively-developed project rather than an independently audited one - if you find something that concerns you, please open an issue.
+If you find something that concerns you, please open an issue.
 
 ## Updating
 
@@ -134,7 +134,7 @@ Confirmed working end-to-end on real hardware for both a Pi 5 and a Compute Modu
 
 ## Testing a release
 
-There's no real-hardware CI for this project, so before cutting a release, run [device-tests](device-tests/README.md) against a real test device on the `-rcN` build - a repeatable on-device suite (local broker ACL enforcement, cloud round-trip delivery, connectivity) that replaces manually SSHing in and eyeballing raw mosquitto logs each time. See its README for setup and what's covered.
+There's no real-hardware CI for this project, so instead before cutting a release, run [device-tests](device-tests/README.md) against a real test device on the `-rcN` build - a repeatable on-device suite (local broker ACL enforcement, cloud round-trip delivery, connectivity) that replaces manually SSHing in and eyeballing raw mosquitto logs each time. See its README for setup and what's covered.
 
 ## Troubleshooting
 
