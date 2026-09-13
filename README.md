@@ -89,11 +89,11 @@ If a previously-provisioned device later loses connectivity for a sustained peri
 
 At startup, the agent publishes static system facts as datastreams: device model, OS, kernel version, architecture, total memory, total disk (`AgentDeviceModel`, `AgentOS`, `AgentKernel`, `AgentArchitecture`, `AgentTotalMemory`, `AgentTotalDisk`). These are plain datastreams rather than Blynk's metadata fields - metadata is the better semantic fit for static facts like these, but dashboard widgets currently can't display metadata fields, only datastreams, so datastreams are what's actually usable on the dashboard.
 
-Live health metrics - CPU usage, memory usage, disk usage, temperature, uptime, and which network interface is actually carrying traffic right now (`AgentCPUUsage`, `AgentMemUsage`, `AgentDiskUsage`, `AgentTemperature`, `AgentUptime`, `AgentConnectionType`, `AgentIPAddress`, `AgentSignalQuality`) - report every 60s while enabled via a console Switch widget bound to an `AgentDiagnosticsEnabled` datastream, **on by default**. The agent asks Blynk for the current on/off state each time it (re)starts rather than assuming a default, so a restarted agent picks back up whatever you last set rather than silently reverting. The system/CPU/memory/disk/temperature/uptime metrics are read directly from `/proc`, `/sys`, and Python's standard library - no extra dependency; connection type/IP/signal quality come from NetworkManager (and ModemManager for cellular signal) over the same D-Bus connection already used for BLE provisioning.
+Live health metrics - CPU usage, memory usage, disk usage, temperature, uptime, and which network interface is actually carrying traffic right now (`AgentCPUUsage`, `AgentMemUsage`, `AgentDiskUsage`, `AgentTemperature`, `AgentUptime`, `AgentConnectionType`, `AgentIPAddress`, `AgentSignalQuality`, `AgentAccessTechnology`) - report every 60s while enabled via a console Switch widget bound to an `AgentDiagnosticsEnabled` datastream, **on by default**. The agent asks Blynk for the current on/off state each time it (re)starts rather than assuming a default, so a restarted agent picks back up whatever you last set rather than silently reverting. The system/CPU/memory/disk/temperature/uptime metrics are read directly from `/proc`, `/sys`, and Python's standard library - no extra dependency; connection type/IP/signal quality/access technology come from NetworkManager (and ModemManager for cellular) over the same D-Bus connection already used for BLE provisioning.
 
-`AgentConnectionType` reflects NetworkManager's own "primary connection" concept - whichever interface currently has the best route, not just "some interface happens to be connected" - so on a device with Ethernet, WiFi, and cellular all simultaneously active, it reports whichever one is actually carrying traffic. `AgentSignalQuality` (0-100) only applies to WiFi and cellular - there's no such concept for a wired Ethernet link, so it's simply not published in that case. `AgentIPAddress` is the primary connection's own IPv4 address.
+`AgentConnectionType` reflects NetworkManager's own "primary connection" concept - whichever interface currently has the best route, not just "some interface happens to be connected" - so on a device with Ethernet, WiFi, and cellular all simultaneously active, it reports whichever one is actually carrying traffic. `AgentSignalQuality` (0-100) only applies to WiFi and cellular - there's no such concept for a wired Ethernet link, so it's simply not published in that case. `AgentIPAddress` is the primary connection's own IPv4 address. `AgentAccessTechnology` only applies to cellular - the modem's current radio technology (e.g. `LTE`, `Cat-M`, `NB-IoT`, `HSPA+`; ModemManager's `AccessTechnologies` is a bitmask, so this can occasionally show more than one joined with `+`).
 
-To set it up, create these datastreams for the device's template: the six system-info fields above (String), `AgentCPUUsage`/`AgentMemUsage`/`AgentDiskUsage`/`AgentSignalQuality` (Double, 0-100), `AgentTemperature` (Double, 0-110), `AgentUptime` (Double, seconds - a Label widget with a custom mapping/formatter reads better than raw seconds), `AgentConnectionType`/`AgentIPAddress` (String), and `AgentDiagnosticsEnabled` (Integer, 0-1, with a Switch widget - reporting runs even without this widget added at all, since the agent treats no stored value as "on"; add the widget if you want to be able to turn it off). Add Label/Gauge/History Graph widgets bound to whichever of these you want visible on the dashboard.
+To set it up, create these datastreams for the device's template: the six system-info fields above (String), `AgentCPUUsage`/`AgentMemUsage`/`AgentDiskUsage`/`AgentSignalQuality` (Double, 0-100), `AgentTemperature` (Double, 0-110), `AgentUptime` (Double, seconds - a Label widget with a custom mapping/formatter reads better than raw seconds), `AgentConnectionType`/`AgentIPAddress`/`AgentAccessTechnology` (String), and `AgentDiagnosticsEnabled` (Integer, 0-1, with a Switch widget - reporting runs even without this widget added at all, since the agent treats no stored value as "on"; add the widget if you want to be able to turn it off). Add Label/Gauge/History Graph widgets bound to whichever of these you want visible on the dashboard.
 
 ## Remote terminal (on by default for now)
 
@@ -168,3 +168,22 @@ Raspberry Pi kernels around `6.18.34` have a Bluetooth regression that breaks BL
   ```
   sudo apt-mark hold linux-image-6.18.34+rpt-rpi-2712 linux-image-6.18.34+rpt-rpi-v8 linux-image-rpi-2712 linux-image-rpi-v8
   ```
+
+### BLE provisioning: app hangs on "reading device details" (or shows an unexpected pairing prompt)
+
+Root cause either way: `bluez_peripheral` doesn't preserve stable GATT attribute handles across container restarts, so a phone that cached the old layout from a previous connection to the same device ends up trying to use handles that no longer match. The app's request still reaches the agent fine, but the reply can never get back to a phone whose subscription/handles are now wrong, so it just hangs on "reading device details."
+
+This shows up two different ways depending on the device's BlueZ version:
+
+- **Older BlueZ (pre-March 2023, before [upstream disabled EATT by default](https://github.com/bluez/bluez/commit/ab3ff0d2))**: confirmed on a CompuLab IOT-GATE-iMX8 - the handle mismatch makes Android's Robust Caching feature (which relies on EATT) trigger an unexpected "Pair with device?" prompt. `install.sh` and `pi-image-builder` both now set `Channels = 1` (disabling EATT) automatically for exactly this case - only a device set up before that fix landed would still hit it:
+  ```
+  sudo nano /etc/bluetooth/main.conf
+  # under [GATT], add or set:
+  #   Channels = 1
+
+  sudo systemctl restart bluetooth
+  docker restart blynk-agent-1
+  ```
+- **Current BlueZ (already defaults to EATT off)**: confirmed on a Raspberry Pi 5 running BlueZ 5.82 - the `Channels = 1` fix above is already the default here and doesn't change anything, yet the same hang still happened, via a plain (EATT-independent) ATT `Invalid Handle` error confirmed with `sudo btmon` while writing to a since-moved notification descriptor. There's no config fix for this case - the phone's own cached pairing is simply stale.
+
+Either way, forget the device's existing Bluetooth pairing on the phone (Settings → Bluetooth → forget "Blynk Device-...") before retrying, so it can't reuse any handles cached from before.

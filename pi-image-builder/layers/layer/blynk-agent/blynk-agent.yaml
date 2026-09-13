@@ -33,6 +33,28 @@ mmdebstrap:
       cp "$SRCROOT/layer/blynk-agent/files/docker-compose.yml" "$1/opt/blynk/docker-compose.yml"
       cp "$SRCROOT/layer/blynk-agent/files/blynk-first-boot.service" "$1/etc/systemd/system/blynk-first-boot.service"
     - $BDEBSTRAP_HOOKS/enable-units "$1" blynk-first-boot
+    # Same fix as install.sh, see its own comment for the full explanation
+    # (and a real hardware case, a Pi 5, where a *different* EATT-
+    # independent stale-GATT-handle symptom still occurred despite EATT
+    # already being off by default) - this guarantees Channels = 1
+    # regardless of whether the image's BlueZ version already defaults to
+    # it (true from BlueZ upstream commit ab3ff0d2, March 2023) or not
+    # (older BlueZ, where this is what actually stops an unexpected
+    # pairing prompt on repeated reprovisioning). No systemctl restart
+    # needed - bluetooth isn't running during the build, this just needs
+    # to be correct before first real boot.
+    - |-
+      set -eu
+      BLUEZ_CONF="$1/etc/bluetooth/main.conf"
+      if [ -f "$BLUEZ_CONF" ] && ! grep -q "^Channels = 1" "$BLUEZ_CONF"; then
+        if grep -q "^Channels" "$BLUEZ_CONF"; then
+          sed -i "s/^Channels.*/Channels = 1/" "$BLUEZ_CONF"
+        elif grep -q "^\[GATT\]" "$BLUEZ_CONF"; then
+          sed -i "/^\[GATT\]/a Channels = 1" "$BLUEZ_CONF"
+        else
+          printf '\n[GATT]\nChannels = 1\n' >> "$BLUEZ_CONF"
+        fi
+      fi
     # Pre-cache both images as docker-archive tarballs, reading the actual
     # image:tag references from the staged docker-compose.yml rather than
     # hardcoding a version here - always matches whatever was checked out

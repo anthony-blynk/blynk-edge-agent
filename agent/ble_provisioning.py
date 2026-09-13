@@ -223,10 +223,53 @@ MM_OBJECT_MANAGER_IFACE = "org.freedesktop.DBus.ObjectManager"
 MM_MODEM_LOCK_NONE = 1
 MM_MODEM_LOCK_SIM_PIN = 2
 
+# MMModemAccessTechnology - a bitmask (Modem.AccessTechnologies), not a
+# single value, since ModemManager itself defines it that way - a modem can
+# in principle report more than one bit set at once. Confirmed against
+# ModemManager's own upstream source (include/ModemManager-enums.h) rather
+# than assumed, same as the lock values above.
+# https://www.freedesktop.org/software/ModemManager/api/latest/ModemManager-Flags-and-Enumerations.html
+MM_ACCESS_TECH_NAMES = {
+    1 << 0: "POTS",
+    1 << 1: "GSM",
+    1 << 2: "GSM Compact",
+    1 << 3: "GPRS",
+    1 << 4: "EDGE",
+    1 << 5: "UMTS",
+    1 << 6: "HSDPA",
+    1 << 7: "HSUPA",
+    1 << 8: "HSPA",
+    1 << 9: "HSPA+",
+    1 << 10: "1xRTT",
+    1 << 11: "EVDO0",
+    1 << 12: "EVDOA",
+    1 << 13: "EVDOB",
+    1 << 14: "LTE",
+    1 << 15: "5G NR",
+    1 << 16: "Cat-M",
+    1 << 17: "NB-IoT",
+}
+
+
+def _format_access_technologies(mask: int) -> str:
+    names = [name for bit, name in MM_ACCESS_TECH_NAMES.items() if mask & bit]
+    return "+".join(names) if names else "unknown"
+
 
 async def _nm_interface(bus, path: str, iface: str):
     introspection = await bus.introspect(NM_BUS_NAME, path)
     proxy = bus.get_proxy_object(NM_BUS_NAME, path, introspection)
+    return proxy.get_interface(iface)
+
+
+async def _mm_interface(bus, path: str, iface: str):
+    # Same shape as _nm_interface, but against ModemManager's own bus name -
+    # confirmed on real hardware that reusing _nm_interface for a
+    # ModemManager object path fails with "interface not found on this
+    # object", since it introspects that path against NetworkManager's bus
+    # instead, which has nothing there.
+    introspection = await bus.introspect(MM_BUS_NAME, path)
+    proxy = bus.get_proxy_object(MM_BUS_NAME, path, introspection)
     return proxy.get_interface(iface)
 
 

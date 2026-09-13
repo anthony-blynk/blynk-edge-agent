@@ -806,7 +806,7 @@ async def _get_network_status() -> dict:
     from dbus_next.constants import BusType
 
     bp = ble_provisioning
-    result = {"connection_type": "none", "ip_address": "", "signal_quality": None}
+    result = {"connection_type": "none", "ip_address": "", "signal_quality": None, "access_technology": None}
     bus = await MessageBus(bus_type=BusType.SYSTEM).connect()
     try:
         nm = await bp._nm_interface(bus, bp.NM_ROOT_PATH, bp.NM_IFACE)
@@ -850,11 +850,13 @@ async def _get_network_status() -> dict:
             info = await bp._get_modem_info(bus)
             modem_path = info.get("modem_path")
             if modem_path:
-                modem_iface = await bp._nm_interface(bus, modem_path, bp.MM_MODEM_IFACE)
+                modem_iface = await bp._mm_interface(bus, modem_path, bp.MM_MODEM_IFACE)
                 signal_quality = await modem_iface.get_signal_quality()
                 # SignalQuality is a (percent: uint, recent: bool) struct.
                 if isinstance(signal_quality, (list, tuple)) and signal_quality:
                     result["signal_quality"] = signal_quality[0]
+                access_tech = await modem_iface.get_access_technologies()
+                result["access_technology"] = bp._format_access_technologies(access_tech)
     finally:
         bus.disconnect()
     return result
@@ -1178,11 +1180,23 @@ class BlynkAgent:
         except Exception as e:
             logger.warning(f"Could not read network status: {e}")
             network_status = {}
-        self.client.publish("ds/AgentConnectionType", network_status.get("connection_type", "none"), qos=1)
+        # "connection_type" in network_status - not .get(..., "none") -
+        # deliberately: a successful call always sets this key (even to the
+        # literal string "none", when there's genuinely no primary
+        # connection), so its absence means this cycle failed outright.
+        # Confirmed on real hardware that publishing a hardcoded "none" on
+        # every failed cycle overwrote a still-correct dashboard value with
+        # a wrong one, while ip_address/signal_quality (already
+        # conditional) correctly kept showing their real last-known value -
+        # a confusing, self-contradictory combination on the dashboard.
+        if "connection_type" in network_status:
+            self.client.publish("ds/AgentConnectionType", network_status["connection_type"], qos=1)
         if network_status.get("ip_address"):
             self.client.publish("ds/AgentIPAddress", network_status["ip_address"], qos=1)
         if network_status.get("signal_quality") is not None:
             self.client.publish("ds/AgentSignalQuality", str(network_status["signal_quality"]), qos=1)
+        if network_status.get("access_technology"):
+            self.client.publish("ds/AgentAccessTechnology", network_status["access_technology"], qos=1)
 
         logger.debug(f"Published diagnostics: {metrics}, network: {network_status}")
 

@@ -91,6 +91,38 @@ else
   echo "$STATE_DIR/blynk.env already exists, leaving it alone"
 fi
 
+# Confirmed on a CompuLab IOT-GATE-iMX8 running an older BlueZ: EATT
+# (Enhanced ATT) being active means bluez_peripheral's lack of stable GATT
+# attribute handles across container restarts can trigger Android's Robust
+# Caching feature into an unexpected "Pair with device?" prompt when a
+# phone reconnects to a device whose handle layout has since changed.
+# Channels = 1 disables EATT entirely, stopping that specific symptom.
+# BlueZ itself disabled EATT by default upstream from March 2023
+# (bluez/bluez@ab3ff0d2, "main: Disable EATT by default") - so on any
+# device already running a BlueZ from after that change, this setting is
+# already the default and setting it explicitly here is a no-op. It's kept
+# as an explicit, version-independent guarantee for anything running an
+# older BlueZ that still defaults the other way, not because every device
+# needs it. Note this does NOT prevent every stale-handle symptom - a
+# Raspberry Pi 5 with EATT already off by default still hit a *different*
+# manifestation of the same underlying handle-instability issue (an
+# outright ATT "Invalid Handle" error via Android's plain, EATT-independent
+# GATT cache) - see the README Troubleshooting entry for that case, whose
+# actual fix is clearing the phone's cached pairing for the device, not
+# anything in this file.
+BLUEZ_CONF=/etc/bluetooth/main.conf
+if [ -f "$BLUEZ_CONF" ] && ! grep -q "^Channels = 1" "$BLUEZ_CONF"; then
+  if grep -q "^Channels" "$BLUEZ_CONF"; then
+    sudo sed -i "s/^Channels.*/Channels = 1/" "$BLUEZ_CONF"
+  elif grep -q "^\[GATT\]" "$BLUEZ_CONF"; then
+    sudo sed -i "/^\[GATT\]/a Channels = 1" "$BLUEZ_CONF"
+  else
+    printf '\n[GATT]\nChannels = 1\n' | sudo tee -a "$BLUEZ_CONF" >/dev/null
+  fi
+  sudo systemctl restart bluetooth
+  echo "Disabled BLE EATT (main.conf [GATT] Channels = 1) - avoids a known BlueZ issue where repeated BLE provisioning can silently break (see README Troubleshooting)"
+fi
+
 echo "Pulling images..."
 if ! docker compose -f "$STATE_DIR/docker-compose.yml" pull; then
   echo "Pull failed, cloning repo to build locally instead..."
