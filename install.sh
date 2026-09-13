@@ -256,7 +256,7 @@ docker compose -f "$STATE_DIR/docker-compose.yml" up -d
 
 echo ""
 echo ""
-echo "Installed successfully."
+echo "Blynk Edge Agent Installed successfully."
 echo ""
 echo "Check status with: docker compose -f $STATE_DIR/docker-compose.yml ps"
 echo ""
