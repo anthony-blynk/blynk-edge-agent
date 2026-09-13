@@ -8,7 +8,10 @@ RAW_BASE="https://raw.githubusercontent.com/$OWNER/$REPO/$BRANCH"
 STATE_DIR=/opt/blynk
 
 if ! command -v docker >/dev/null 2>&1; then
-  echo "Installing Docker..."
+  echo ""
+  echo ""
+  echo "Installing Docker (takes a few minutes)..."
+  echo ""
   curl -fsSL https://get.docker.com | sh
   sudo usermod -aG docker "$USER"
   echo ""
