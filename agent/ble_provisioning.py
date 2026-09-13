@@ -354,6 +354,29 @@ async def _delete_existing_wifi_connections(bus, ssid: str) -> None:
             logger.warning(f"Could not inspect/delete existing NM connection {path}: {e}")
 
 
+async def _delete_existing_cellular_connections(bus) -> None:
+    """Same problem as _delete_existing_wifi_connections above, same fix -
+    but this side of it was missed when cellular support was added, and it
+    showed on real hardware (a Pi 5, repeated modem swaps/reconnect attempts
+    during testing) as 4 separate "blynk-cellular" gsm profiles piling up,
+    none of them ever actually bound to the modem's NM device - NetworkManager
+    had nothing wrong to report, there was just never an unambiguous single
+    profile left for it to auto-activate. Unlike WiFi's per-SSID identity,
+    every cellular connection this project creates uses the same fixed
+    connection.id ("blynk-cellular" - see _connect_cellular), so matching on
+    that id is sufficient, no need to compare APN/other settings."""
+    settings_iface = await _nm_interface(bus, NM_SETTINGS_PATH, NM_SETTINGS_IFACE)
+    for path in await settings_iface.call_list_connections():
+        try:
+            conn = await _nm_interface(bus, path, NM_SETTINGS_CONNECTION_IFACE)
+            connection = (await conn.call_get_settings()).get("connection", {})
+            existing_id = connection.get("id")
+            if existing_id is not None and existing_id.value == "blynk-cellular":
+                await conn.call_delete()
+        except Exception as e:
+            logger.warning(f"Could not inspect/delete existing NM connection {path}: {e}")
+
+
 def _channel_from_frequency_mhz(freq: int) -> int:
     if freq == 2484:
         return 14
@@ -902,6 +925,8 @@ class ProvisioningSession:
         modem_device_path = await _get_modem_device_path(self.bus)
         if modem_device_path is None:
             return False, "generic"
+
+        await _delete_existing_cellular_connections(self.bus)
 
         settings = {
             "connection": {

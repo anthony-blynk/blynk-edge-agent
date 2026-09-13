@@ -916,7 +916,28 @@ class BlynkAgent:
         # comment there for why this topic tells us the cloud bridge's own
         # connection state, not just this container's local-broker link.
         self._bridge_state_topic = f"$SYS/broker/connection/blynk-bridge-{config.template_id}/state"
-        self._bridge_disconnected_since: Optional[float] = None
+        # Starts as "now", not None - confirmed against mosquitto's own
+        # upstream source (bridge__connect_step1, v2.1.2) that a bridge's
+        # very first-ever connect attempt queues its "0" notification via
+        # db__messages_easy_queue, a live-delivery-only queue to already-
+        # subscribed sessions, NOT a real retained-store publish (that only
+        # happens via send__real_publish, on an actual successful connect in
+        # bridge__on_connect) - and that one-time "0" attempt is gated by an
+        # initial_notification_done flag that's set regardless of whether
+        # this agent had subscribed in time to receive it. So a bridge that
+        # has never once connected since mqtt-bridge's own container last
+        # started can go forever without ever publishing anything to this
+        # topic at all - confirmed on real hardware (a Pi 5 stuck in a DNS-
+        # resolution retry loop for 12+ minutes straight) where this left
+        # _bridge_disconnected_since stuck at None the entire time, so
+        # neither this class's own DNS-refresh restart nor its BLE-
+        # reprovisioning fallback ever engaged. Defaulting to "disconnected
+        # since agent startup" instead is the safe assumption - it's also
+        # just true, since nothing has connected yet at that point - and
+        # _handle_bridge_state below still resets it to None as soon as a
+        # genuine "1" arrives, so a normal healthy bridge (up within a few
+        # seconds) never reaches either grace period regardless.
+        self._bridge_disconnected_since: Optional[float] = time.time()
         self._bridge_dns_refresh_attempted = False
         self._reprovisioning = False
         self.terminal_session_enabled = False  # the fast on/off switch, on top of TERMINAL_CAPABILITY_ENABLED
