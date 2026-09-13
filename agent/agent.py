@@ -96,6 +96,24 @@ DIAGNOSTICS_INTERVAL = 60  # seconds between CPU/mem/disk/temp/uptime/network re
 # hours loop, which never re-enters provisioning automatically at all.
 BRIDGE_DISCONNECT_GRACE_PERIOD = 300
 
+# A cheaper, earlier recovery attempt than the full grace period above:
+# restart mqtt-bridge once to refresh its DNS resolver (see
+# MqttBridge.refresh_dns) before ever resorting to BLE reprovisioning.
+# MqttBridge.ensure_current's own force_restart already does this same
+# restart, but only as a side effect of a *BLE-provisioning-driven* network
+# change - a host-level change made outside of that (nmcli, a hardware
+# modem swap, a router/DNS change) never touches that path at all, and
+# confirmed on real hardware (a Pi 5, mid modem-swap testing) that this
+# left the bridge stuck in a DNS-resolution retry loop indefinitely with
+# no BLE session ever involved to trigger the existing fix. The watchdog
+# below is the one thing that's agnostic to *how* the network changed - it
+# just watches whether the bridge is actually up - so it's the natural
+# place to catch this general case. Comfortably longer than mosquitto's own
+# observed reconnect backoff (5-30s) so this doesn't fire on an ordinary
+# blip, comfortably shorter than BRIDGE_DISCONNECT_GRACE_PERIOD so a real
+# stale-DNS case gets fixed well before the user ever sees BLE advertising.
+BRIDGE_DNS_REFRESH_GRACE_PERIOD = 90
+
 BRIDGE_TEMPLATE = """\
 connection blynk-cloud
 address {server}:8883
@@ -361,6 +379,16 @@ class MqttBridge:
     def apply_redirect(self, new_server: str) -> None:
         BRIDGE_HOST_OVERRIDE_FILE.write_text(new_server)
         self.ensure_current(server_override=new_server)
+
+    def refresh_dns(self) -> None:
+        """One-shot recovery for the same stale-DNS failure mode
+        ensure_current's force_restart already handles - see its comment -
+        but for the case that path doesn't cover: a network change made
+        outside of BLE provisioning entirely. Called at most once per
+        outage by BlynkAgent._check_connectivity_watchdog, well before its
+        much heavier full-BLE-reprovisioning fallback."""
+        logger.info("Restarting mqtt-bridge to refresh its DNS resolver")
+        self._restart_mqtt_bridge()
 
     def _restart_mqtt_bridge(self) -> None:
         try:
@@ -889,6 +917,7 @@ class BlynkAgent:
         # connection state, not just this container's local-broker link.
         self._bridge_state_topic = f"$SYS/broker/connection/blynk-bridge-{config.template_id}/state"
         self._bridge_disconnected_since: Optional[float] = None
+        self._bridge_dns_refresh_attempted = False
         self._reprovisioning = False
         self.terminal_session_enabled = False  # the fast on/off switch, on top of TERMINAL_CAPABILITY_ENABLED
         self._terminal_lock = threading.Lock()  # one command's output at a time - see _run_terminal_command
@@ -1028,8 +1057,10 @@ class BlynkAgent:
             if self._bridge_disconnected_since is not None:
                 logger.info("Blynk cloud bridge reconnected")
             self._bridge_disconnected_since = None
+            self._bridge_dns_refresh_attempted = False
         elif self._bridge_disconnected_since is None:
             self._bridge_disconnected_since = time.time()
+            self._bridge_dns_refresh_attempted = False
             logger.warning("Blynk cloud bridge disconnected")
 
     def _check_connectivity_watchdog(self) -> None:
@@ -1041,6 +1072,18 @@ class BlynkAgent:
         if self._bridge_disconnected_since is None or self._reprovisioning:
             return
         outage = time.time() - self._bridge_disconnected_since
+
+        if outage >= BRIDGE_DNS_REFRESH_GRACE_PERIOD and not self._bridge_dns_refresh_attempted:
+            # Once per outage, not once per 60s tick - _handle_bridge_state
+            # clears this flag again on the next fresh disconnect.
+            self._bridge_dns_refresh_attempted = True
+            logger.warning(
+                f"Blynk cloud bridge has been down for {int(outage)}s - restarting mqtt-bridge "
+                "once in case its DNS resolver is stuck stale from a network change (see "
+                "MqttBridge.refresh_dns), before falling back to BLE reprovisioning"
+            )
+            self.bridge.refresh_dns()
+
         if outage < BRIDGE_DISCONNECT_GRACE_PERIOD:
             return
         logger.warning(
@@ -1094,6 +1137,7 @@ class BlynkAgent:
                 time.sleep(2)
                 if self._bridge_disconnected_since is not None:
                     self._bridge_disconnected_since = time.time()
+                    self._bridge_dns_refresh_attempted = False
 
     def _handle_redirect(self, payload: str) -> None:
         payload = payload.strip()
