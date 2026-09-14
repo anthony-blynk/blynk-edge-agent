@@ -63,7 +63,14 @@ if ! docker compose version >/dev/null 2>&1; then
 fi
 
 sudo mkdir -p "$STATE_DIR/backups" "$STATE_DIR/mqtt-bridge/conf.d"
-sudo chown -R "$USER":"$USER" "$STATE_DIR"
+# mqtt-bridge/conf.d holds files the agent deliberately chowns to
+# mosquitto's own fixed uid (1883), not this user - confirmed on real
+# hardware that a blanket recursive chown here clobbers that ownership
+# every time install.sh gets re-run (e.g. to pick up a later fix), and
+# mosquitto then fails outright on its next restart ("Unable to open
+# acl_file") since it can no longer read a file it doesn't own - a real
+# observed crash loop, not a hypothetical. Excluded from the sweep.
+sudo find "$STATE_DIR" -path "$STATE_DIR/mqtt-bridge/conf.d" -prune -o -exec chown "$USER":"$USER" {} \;
 
 if [ ! -f "$STATE_DIR/docker-compose.yml" ]; then
   curl -fsSL "$RAW_BASE/docker-compose.yml" -o "$STATE_DIR/docker-compose.yml"

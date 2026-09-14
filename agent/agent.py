@@ -245,9 +245,20 @@ def _write_acl_file(creds: dict) -> bool:
         bridge_username=creds["BRIDGE_LOCAL_USERNAME"],
         agent_username=creds["AGENT_LOCAL_USERNAME"],
     )
-    if ACL_FILE.exists() and ACL_FILE.read_text() == rendered:
-        return False
-    ACL_FILE.write_text(rendered)
+    content_changed = not (ACL_FILE.exists() and ACL_FILE.read_text() == rendered)
+    if content_changed:
+        ACL_FILE.write_text(rendered)
+    # Re-applied unconditionally, even when content is unchanged - confirmed
+    # on real hardware that install.sh's own `chown -R "$USER":"$USER"
+    # "$STATE_DIR"` (there to hand ordinary ownership of /opt/blynk to the
+    # installing user) clobbers this back whenever install.sh gets re-run
+    # after the fact, and mosquitto then fails outright on its next restart
+    # ("Unable to open acl_file") since it can no longer read a file it
+    # doesn't own - a real, observed crash loop, not a hypothetical. Putting
+    # this outside the content-changed check means the agent self-heals the
+    # ownership on every subsequent check (e.g. its own next restart)
+    # regardless of what clobbered it, instead of only fixing it the one
+    # time the content happens to change.
     os.chmod(ACL_FILE, 0o600)
     try:
         # eclipse-mosquitto's image always runs as a fixed uid/gid of
@@ -260,7 +271,7 @@ def _write_acl_file(creds: dict) -> bool:
         os.chown(ACL_FILE, 1883, 1883)
     except (PermissionError, AttributeError, OSError):
         pass
-    return True
+    return content_changed
 
 
 class BlynkConfig:
