@@ -102,6 +102,10 @@ EOF
 else
   echo "$STATE_DIR/blynk.env already exists, leaving it alone"
 fi
+# Retroactively tightens permissions on a pre-existing file too (content
+# untouched) - re-running install.sh is how an already-provisioned device
+# would pick this fix up.
+chmod 600 "$STATE_DIR/blynk.env"
 
 CURRENT_AUTH_TOKEN=$(grep '^BLYNK_AUTH_TOKEN=' "$STATE_DIR/blynk.env" | cut -d= -f2-)
 if [ -z "$CURRENT_AUTH_TOKEN" ]; then

@@ -6,6 +6,8 @@ docker-compose.yml and reacts to a few other downlink control topics.
 """
 
 import asyncio
+import base64
+import hashlib
 import json
 import logging
 import platform
@@ -213,6 +215,11 @@ def _ensure_local_broker_credentials() -> dict:
     ordinary local script still works unaffected, before trusting this."""
     required = ("BRIDGE_LOCAL_USERNAME", "BRIDGE_LOCAL_PASSWORD", "AGENT_LOCAL_USERNAME", "AGENT_LOCAL_PASSWORD")
     if LOCAL_BROKER_CREDS_FILE.exists():
+        # Retroactively tightens permissions on a pre-existing file too (an
+        # already-deployed device picks this up on its next agent restart,
+        # not just a fresh install) - holds the actual local-broker
+        # passwords, world-readable by default until now.
+        os.chmod(LOCAL_BROKER_CREDS_FILE, 0o600)
         values = dotenv_values(LOCAL_BROKER_CREDS_FILE)
         if all(values.get(k) for k in required):
             return values
@@ -224,6 +231,7 @@ def _ensure_local_broker_credentials() -> dict:
     }
     LOCAL_BROKER_CREDS_FILE.parent.mkdir(parents=True, exist_ok=True)
     LOCAL_BROKER_CREDS_FILE.write_text("".join(f"{k}={v}\n" for k, v in creds.items()))
+    os.chmod(LOCAL_BROKER_CREDS_FILE, 0o600)
     return creds
 
 
@@ -442,6 +450,31 @@ class ComposeManager:
         try:
             logger.info(f"Downloading compose file from: {url}")
             response = self._get_with_retry(url)
+
+            # Confirmed on real hardware: Blynk Cloud's OTA download response
+            # carries a base64-encoded SHA256 digest in the x-SHA256 header
+            # (not in the downlink/ota/json control payload, which only has
+            # url/size/ver) - checked before anything else touches the
+            # content, so a corrupted or tampered download never reaches
+            # YAML parsing or gets written to disk at all. Not made a hard
+            # requirement (missing header only warns, doesn't reject) since
+            # this is the first real-world confirmation of the header's
+            # presence and it's not yet certain every Blynk Cloud OTA path
+            # sends it - a hard requirement here could otherwise silently
+            # break OTA entirely for some other path. Revisit once that's
+            # confirmed more broadly.
+            expected_sha256 = response.headers.get("x-SHA256")
+            if expected_sha256:
+                actual_sha256 = base64.b64encode(hashlib.sha256(response.content).digest()).decode()
+                if actual_sha256 != expected_sha256.strip():
+                    logger.error(
+                        f"OTA checksum mismatch (expected {expected_sha256}, got {actual_sha256}) - "
+                        "refusing to apply, download may be corrupted or tampered with"
+                    )
+                    return False
+                logger.info("OTA checksum verified (sha256 matches x-SHA256 header)")
+            else:
+                logger.warning("OTA download response has no x-SHA256 header - skipping checksum verification")
 
             try:
                 new_data = yaml.safe_load(response.text)
@@ -1051,10 +1084,19 @@ class BlynkAgent:
             # refuse to let you bind-mount a path inside /proc directly. The
             # working combination is pid: "host" + privileged: true (see
             # docker-compose.yml) so this container's own /proc genuinely is
-            # the host's - this is an immediate, unclean reboot, not the
-            # equivalent of a graceful `reboot`.
-            with open("/proc/sysrq-trigger", "w") as f:
-                f.write("b")
+            # the host's. Previously wrote just "b" (immediate reboot, no
+            # sync/unmount) - switched to the standard SysRq safe-reboot
+            # sequence instead (sync, remount read-only, then reboot - the
+            # "SUB" of the well-known REISUB pattern), since a bare "b" risks
+            # losing whatever was buffered but not yet flushed to disk at the
+            # moment the command arrives. Each step needs its own brief pause
+            # to actually complete before the next one fires.
+            sysrq_steps = (("s", "sync"), ("u", "remount read-only"), ("b", "reboot"))
+            for sysrq_char, description in sysrq_steps:
+                logger.info(f"Reboot: sysrq {sysrq_char} ({description})")
+                with open("/proc/sysrq-trigger", "w") as f:
+                    f.write(sysrq_char)
+                time.sleep(1)
         except Exception as e:
             logger.error(f"Failed to trigger reboot: {e}")
 
