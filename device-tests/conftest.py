@@ -4,8 +4,10 @@ actually is - auto-detected from docker-compose.yml, see
 _detect_broker_port - and the local config files below), not in CI. See
 README.md in this directory for usage."""
 
+import io
 import os
 import re
+import subprocess
 import threading
 import time
 from pathlib import Path
@@ -67,7 +69,25 @@ def blynk_config():
 
 @pytest.fixture(scope="session")
 def broker_creds():
-    values = dotenv_values(BROKER_CREDS_ENV)
+    # This file is root-owned and 0600 (agent.py chowns/chmods it so only
+    # the agent container's own root process can read it - see
+    # _ensure_local_broker_credentials) - reading it directly as the SSH
+    # user this suite runs as (not root) started failing with a plain
+    # PermissionError once that fix landed. Going through the agent
+    # container itself (docker exec, same as any other privileged
+    # operation this project does) reads it as the same root process that
+    # owns it, without needing sudo/passwordless-sudo configured on the
+    # host for this test suite specifically.
+    try:
+        result = subprocess.run(
+            ["docker", "exec", "blynk-agent-1", "cat", str(BROKER_CREDS_ENV)],
+            capture_output=True, text=True, timeout=10,
+        )
+    except (subprocess.SubprocessError, OSError) as e:
+        pytest.skip(f"Could not read {BROKER_CREDS_ENV} via docker exec: {e}")
+    if result.returncode != 0:
+        pytest.skip(f"Could not read {BROKER_CREDS_ENV} via docker exec: {result.stderr.strip()}")
+    values = dotenv_values(stream=io.StringIO(result.stdout))
     required = ("BRIDGE_LOCAL_USERNAME", "BRIDGE_LOCAL_PASSWORD", "AGENT_LOCAL_USERNAME", "AGENT_LOCAL_PASSWORD")
     missing = [k for k in required if not values.get(k)]
     if missing:
