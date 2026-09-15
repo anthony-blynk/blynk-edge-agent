@@ -694,7 +694,19 @@ class ComposeManager:
                 capture_output=True, text=True, timeout=10,
             ).stdout.strip()
 
-            cmd = ["docker", "run", "-d", "--rm", "--name", "blynk-apply-helper"]
+            # No --rm: with it, Docker deletes the container - and its logs,
+            # which live with the container under the default json-file
+            # driver - the instant it exits, success or rollback alike,
+            # often before there's any real chance to inspect what happened.
+            # Leaving it stopped means `docker logs blynk-apply-helper`
+            # still works after the fact. The fixed name means a stale one
+            # from a previous run has to be cleared first so it doesn't
+            # collide with this one.
+            subprocess.run(
+                ["docker", "rm", "-f", "blynk-apply-helper"],
+                capture_output=True, text=True, timeout=10,
+            )
+            cmd = ["docker", "run", "-d", "--name", "blynk-apply-helper"]
             if my_network:
                 cmd += ["--network", my_network]
             cmd += [
