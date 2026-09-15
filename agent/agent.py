@@ -128,6 +128,11 @@ BRIDGE_DISCONNECT_GRACE_PERIOD = 300
 # stale-DNS case gets fixed well before the user ever sees BLE advertising.
 BRIDGE_DNS_REFRESH_GRACE_PERIOD = 90
 
+# Mirrors BRIDGE_TEMPLATE's address port below - used by
+# BlynkAgent._probe_cloud_reachable's direct TCP check, independent of
+# mosquitto's own bridge-state notification.
+BLYNK_CLOUD_MQTT_PORT = 8883
+
 BRIDGE_TEMPLATE = """\
 connection blynk-cloud
 address {server}:8883
@@ -1007,23 +1012,30 @@ class BlynkAgent:
         # upstream source (bridge__connect_step1, v2.1.2) that a bridge's
         # very first-ever connect attempt queues its "0" notification via
         # db__messages_easy_queue, a live-delivery-only queue to already-
-        # subscribed sessions, NOT a real retained-store publish (that only
-        # happens via send__real_publish, on an actual successful connect in
-        # bridge__on_connect) - and that one-time "0" attempt is gated by an
-        # initial_notification_done flag that's set regardless of whether
-        # this agent had subscribed in time to receive it. So a bridge that
-        # has never once connected since mqtt-bridge's own container last
-        # started can go forever without ever publishing anything to this
-        # topic at all - confirmed on real hardware (a Pi 5 stuck in a DNS-
-        # resolution retry loop for 12+ minutes straight) where this left
-        # _bridge_disconnected_since stuck at None the entire time, so
-        # neither this class's own DNS-refresh restart nor its BLE-
-        # reprovisioning fallback ever engaged. Defaulting to "disconnected
-        # since agent startup" instead is the safe assumption - it's also
-        # just true, since nothing has connected yet at that point - and
-        # _handle_bridge_state below still resets it to None as soon as a
-        # genuine "1" arrives, so a normal healthy bridge (up within a few
-        # seconds) never reaches either grace period regardless.
+        # subscribed sessions, NOT a real retained-store publish. So a
+        # bridge that has never once connected since mqtt-bridge's own
+        # container last started can go forever without ever publishing
+        # anything to this topic at all - confirmed on real hardware (a Pi 5
+        # stuck in a DNS-resolution retry loop for 12+ minutes straight)
+        # where this left _bridge_disconnected_since stuck at None the
+        # entire time, so neither this class's own DNS-refresh restart nor
+        # its BLE-reprovisioning fallback ever engaged. Defaulting to
+        # "disconnected since agent startup" instead is the safe assumption.
+        #
+        # It turns out this notification is unreliable well beyond that one
+        # documented case, though: confirmed on real hardware (2026-09-15,
+        # repeatedly) that once mosquitto restarts for ANY reason (a DNS
+        # refresh, an ACL update, an OTA apply), its bridge reconnects to
+        # Blynk Cloud within the same second - reliably faster than this
+        # agent's own local-broker client can reconnect and resubscribe to
+        # this topic in a separate container - so the "connected" transition
+        # is missed just as easily as the "0" one, every single time. Worse,
+        # since the watchdog's own recovery action IS a mosquitto restart,
+        # this becomes a self-sustaining false-positive loop: a healthy
+        # device falsely believed disconnected, restarted, still falsely
+        # believed disconnected, forever. See _probe_cloud_reachable - an
+        # independent, active check that doesn't depend on this
+        # notification's timing at all - used to break that loop.
         self._bridge_disconnected_since: Optional[float] = time.time()
         self._bridge_dns_refresh_attempted = False
         self._reprovisioning = False
@@ -1051,6 +1063,22 @@ class BlynkAgent:
             client.subscribe(TOPIC_DOWNLINK, qos=1)
             client.subscribe(self._bridge_state_topic, qos=1)
             client.subscribe(TOPIC_LOCAL_UPLOAD_WILDCARD, qos=1)
+            # Right after (re)subscribing is exactly when a presumed-
+            # disconnected state is most likely to be a false positive (see
+            # _bridge_disconnected_since's own comment) - mosquitto's bridge
+            # reconnects to Blynk Cloud as part of its own startup, always
+            # faster than this agent can reconnect+resubscribe from a
+            # separate container, so the transition notification is
+            # routinely missed. Only probes when presumed disconnected -
+            # a healthy connected state is left alone.
+            if self._bridge_disconnected_since is not None and self._probe_cloud_reachable():
+                logger.info(
+                    "Blynk cloud reachable via direct probe - clearing presumed-"
+                    "disconnected state (the bridge-state notification is easy to "
+                    "miss right after a local broker restart)"
+                )
+                self._bridge_disconnected_since = None
+                self._bridge_dns_refresh_attempted = False
             self._publish_device_info()
             self._publish_system_info()
             # Current on/off state lives in Blynk (a console Switch widget),
@@ -1227,6 +1255,32 @@ class BlynkAgent:
             self._bridge_dns_refresh_attempted = False
             logger.warning("Blynk cloud bridge disconnected")
 
+    def _probe_cloud_reachable(self, timeout: float = 3.0) -> bool:
+        """Raw TCP reachability check against the same host:port mosquitto's
+        own bridge connects to (BLYNK_CLOUD_MQTT_PORT) - an independent
+        signal that doesn't depend on the bridge-state notification's
+        timing at all, unlike everything else in this class. Confirmed
+        necessary on real hardware: that notification is routinely missed
+        right after a mosquitto restart (see _bridge_disconnected_since's
+        own comment), which without this would leave a healthy device
+        stuck falsely believing it's disconnected indefinitely.
+
+        Not proof the bridge's own MQTT session is authenticated and
+        healthy - just that the network path to Blynk Cloud is currently
+        open. A TCP-reachable-but-MQTT-broken case (bad credentials, a TLS
+        problem) would be wrongly cleared here; that's a real, narrower
+        trade-off against the alternative of a much more commonly false
+        "still disconnected" reading, and the very next watchdog tick
+        re-evaluates from scratch regardless."""
+        server = self.config.effective_server()
+        if not server:
+            return False
+        try:
+            with socket.create_connection((server, BLYNK_CLOUD_MQTT_PORT), timeout=timeout):
+                return True
+        except OSError:
+            return False
+
     def _check_connectivity_watchdog(self) -> None:
         # Ticked from _diagnostics_loop's existing 60s cadence rather than a
         # dedicated thread - the bridge-state notification above is only
@@ -1290,16 +1344,21 @@ class BlynkAgent:
                 # while this unattended session was running (WiFi/ISP came
                 # back on its own with no one around to reconfigure
                 # anything) - mqtt-bridge's bridge-state notification only
-                # republishes on an actual change, so if it already
-                # flipped back to connected while we were busy advertising,
-                # nothing would otherwise tell us. Re-subscribing forces
-                # mqtt-bridge to redeliver the *current* retained value, so
-                # we check reality again instead of blindly re-arming the
-                # clock and looping into another pointless advertising
-                # window forever even after the device is actually fine.
-                self.client.subscribe(self._bridge_state_topic, qos=1)
-                time.sleep(2)
-                if self._bridge_disconnected_since is not None:
+                # republishes on an actual change, so if it already flipped
+                # back to connected while we were busy advertising, nothing
+                # would otherwise tell us. Uses the same direct probe
+                # _on_connect relies on, not a resubscribe - confirmed on
+                # real hardware that resubscribing alone doesn't reliably
+                # redeliver anything here (see _probe_cloud_reachable's own
+                # comment), so this checks reality directly instead of
+                # blindly re-arming the clock and looping into another
+                # pointless advertising window forever even after the
+                # device is actually fine.
+                if self._probe_cloud_reachable():
+                    logger.info("Blynk cloud reachable via direct probe after reprovisioning attempt")
+                    self._bridge_disconnected_since = None
+                    self._bridge_dns_refresh_attempted = False
+                else:
                     self._bridge_disconnected_since = time.time()
                     self._bridge_dns_refresh_attempted = False
 

@@ -244,6 +244,116 @@ class TestBridgeStateAndWatchdog:
         start_reprovisioning.assert_not_called()
 
 
+class TestProbeCloudReachable:
+    """Direct regression coverage for the bug found this session: the
+    bridge-state notification is routinely missed right after a mosquitto
+    restart (confirmed on real hardware, three separate devices), which
+    without an independent check leaves a healthy device stuck falsely
+    believing it's disconnected forever, since its own recovery action
+    (restarting mqtt-bridge) re-triggers the exact same missed
+    notification every time."""
+
+    def test_returns_true_when_connection_succeeds(self, agent_instance, monkeypatch):
+        agent_instance.config.effective_server.return_value = "fra1.blynk.cloud"
+        create_connection = MagicMock(return_value=MagicMock())
+        monkeypatch.setattr(agent.socket, "create_connection", create_connection)
+
+        assert agent_instance._probe_cloud_reachable() is True
+        create_connection.assert_called_once_with(("fra1.blynk.cloud", agent.BLYNK_CLOUD_MQTT_PORT), timeout=3.0)
+
+    def test_returns_false_when_connection_raises_oserror(self, agent_instance, monkeypatch):
+        agent_instance.config.effective_server.return_value = "fra1.blynk.cloud"
+        monkeypatch.setattr(agent.socket, "create_connection", MagicMock(side_effect=OSError("refused")))
+
+        assert agent_instance._probe_cloud_reachable() is False
+
+    def test_returns_false_when_no_server_configured(self, agent_instance, monkeypatch):
+        agent_instance.config.effective_server.return_value = None
+        create_connection = MagicMock()
+        monkeypatch.setattr(agent.socket, "create_connection", create_connection)
+
+        assert agent_instance._probe_cloud_reachable() is False
+        create_connection.assert_not_called()
+
+
+class TestOnConnectFalsePositiveRecovery:
+    """_on_connect uses the probe above to correct a stale presumed-
+    disconnected state right when it's most likely to be wrong - see the
+    comment above the call site for the real-hardware timing race."""
+
+    def _stub_publishers(self, agent_instance, monkeypatch):
+        monkeypatch.setattr(agent_instance, "_publish_device_info", MagicMock())
+        monkeypatch.setattr(agent_instance, "_publish_system_info", MagicMock())
+
+    def test_clears_presumed_disconnected_state_when_probe_succeeds(self, agent_instance, monkeypatch):
+        self._stub_publishers(agent_instance, monkeypatch)
+        monkeypatch.setattr(agent_instance, "_probe_cloud_reachable", MagicMock(return_value=True))
+        agent_instance._bridge_disconnected_since = time.time() - 500
+        agent_instance._bridge_dns_refresh_attempted = True
+
+        agent_instance._on_connect(agent_instance.client, None, None, 0, None)
+
+        assert agent_instance._bridge_disconnected_since is None
+        assert agent_instance._bridge_dns_refresh_attempted is False
+
+    def test_leaves_state_untouched_when_probe_fails(self, agent_instance, monkeypatch):
+        self._stub_publishers(agent_instance, monkeypatch)
+        monkeypatch.setattr(agent_instance, "_probe_cloud_reachable", MagicMock(return_value=False))
+        since = time.time() - 500
+        agent_instance._bridge_disconnected_since = since
+
+        agent_instance._on_connect(agent_instance.client, None, None, 0, None)
+
+        assert agent_instance._bridge_disconnected_since == since
+
+    def test_does_not_probe_when_already_believed_connected(self, agent_instance, monkeypatch):
+        self._stub_publishers(agent_instance, monkeypatch)
+        probe = MagicMock()
+        monkeypatch.setattr(agent_instance, "_probe_cloud_reachable", probe)
+        agent_instance._bridge_disconnected_since = None
+
+        agent_instance._on_connect(agent_instance.client, None, None, 0, None)
+
+        probe.assert_not_called()
+
+
+class TestRunReprovisioningFallbackProbe:
+    """_run_reprovisioning's post-attempt fallback used to resubscribe and
+    hope for a redelivered retained value - confirmed on real hardware that
+    doesn't reliably work here either, so it now uses the same direct
+    probe instead."""
+
+    def test_successful_reprovisioning_clears_outage(self, agent_instance, monkeypatch):
+        monkeypatch.setattr(agent.ble_provisioning, "provision", MagicMock(return_value=True))
+        agent_instance._bridge_disconnected_since = time.time() - 500
+
+        agent_instance._run_reprovisioning()
+
+        assert agent_instance._bridge_disconnected_since is None
+        assert agent_instance._reprovisioning is False
+
+    def test_failed_reprovisioning_clears_outage_when_probe_finds_it_healthy(self, agent_instance, monkeypatch):
+        monkeypatch.setattr(agent.ble_provisioning, "provision", MagicMock(return_value=False))
+        monkeypatch.setattr(agent_instance, "_probe_cloud_reachable", MagicMock(return_value=True))
+        agent_instance._bridge_disconnected_since = time.time() - 500
+        agent_instance._bridge_dns_refresh_attempted = True
+
+        agent_instance._run_reprovisioning()
+
+        assert agent_instance._bridge_disconnected_since is None
+        assert agent_instance._bridge_dns_refresh_attempted is False
+
+    def test_failed_reprovisioning_restarts_clock_when_probe_also_fails(self, agent_instance, monkeypatch):
+        monkeypatch.setattr(agent.ble_provisioning, "provision", MagicMock(return_value=False))
+        monkeypatch.setattr(agent_instance, "_probe_cloud_reachable", MagicMock(return_value=False))
+        agent_instance._bridge_disconnected_since = time.time() - 500
+
+        before = time.time()
+        agent_instance._run_reprovisioning()
+
+        assert agent_instance._bridge_disconnected_since >= before
+
+
 class TestHandleRedirect:
     def test_empty_payload_ignored(self, agent_instance):
         agent_instance._handle_redirect("   ")
