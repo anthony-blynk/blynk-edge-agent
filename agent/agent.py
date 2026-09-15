@@ -84,6 +84,18 @@ TOPIC_DIAGNOSTICS_ENABLED = "downlink/ds/AgentDiagnosticsEnabled"
 TOPIC_TERMINAL_ENABLED = "downlink/ds/AgentTerminalEnabled"
 TOPIC_TERMINAL = "downlink/ds/AgentTerminal"
 TOPIC_INFO = "info/mcu"
+# Generic, app-agnostic proxy to Blynk's HTTP-only Device API file upload
+# endpoint (MQTT's device API has no file-upload capability at all) - a
+# local app publishes raw file bytes to <prefix><filename>, the agent (which
+# already holds the token to render the mqtt-bridge config) makes the
+# authenticated HTTPS call and publishes the resulting URL back on the
+# single shared result topic. The filename is part of the topic, not just
+# a fixed "upload" constant, because Blynk's own API overwrites a
+# previously-uploaded file of the same name (and only retains 10 per
+# device) - a fixed filename would silently defeat that entirely.
+TOPIC_LOCAL_UPLOAD_PREFIX = "local/blynk/upload/"
+TOPIC_LOCAL_UPLOAD_WILDCARD = "local/blynk/upload/#"
+TOPIC_LOCAL_UPLOAD_RESULT = "local/blynk/upload_result"
 
 RECONNECT_DELAY = 1
 MAX_RECONNECT_DELAY = 60
@@ -171,6 +183,8 @@ topic readwrite info/mcu
 topic readwrite event/#
 topic readwrite get/#
 topic readwrite meta/#
+topic readwrite local/blynk/upload/#
+topic readwrite local/blynk/upload_result
 
 # The bridge's own local-side connection needs the same general access as
 # anonymous clients (it subscribes locally to ds/# etc. to forward them up
@@ -191,7 +205,11 @@ topic write downlink/#
 # READ on downlink/# - needed to actually process OTA/reboot/redirect/
 # terminal commands. Deliberately not also given write access to
 # downlink/# - the agent itself never publishes into that namespace, only
-# Blynk Cloud (via the bridge) does.
+# Blynk Cloud (via the bridge) does. Same asymmetric reasoning for the
+# upload proxy topics: the agent only ever consumes local/blynk/upload/#
+# (a local app writes the request) and only ever produces
+# local/blynk/upload_result (a local app reads the reply) - never the
+# other direction for either one.
 user {agent_username}
 topic readwrite ds/#
 topic readwrite batch_ds
@@ -200,6 +218,8 @@ topic readwrite event/#
 topic readwrite get/#
 topic readwrite meta/#
 topic read downlink/#
+topic read local/blynk/upload/#
+topic write local/blynk/upload_result
 """
 
 
@@ -1018,6 +1038,7 @@ class BlynkAgent:
             logger.info(f"Connected to local broker at {MQTT_HOST}:{MQTT_PORT}")
             client.subscribe(TOPIC_DOWNLINK, qos=1)
             client.subscribe(self._bridge_state_topic, qos=1)
+            client.subscribe(TOPIC_LOCAL_UPLOAD_WILDCARD, qos=1)
             self._publish_device_info()
             self._publish_system_info()
             # Current on/off state lives in Blynk (a console Switch widget),
@@ -1036,6 +1057,16 @@ class BlynkAgent:
             logger.warning(f"Unexpected disconnection from local broker: {reason_code}")
 
     def _on_message(self, client, userdata, message) -> None:
+        # Checked before the UTF-8 decode below, not after - an uploaded
+        # file's raw bytes are essentially never valid UTF-8 (an image, a
+        # PDF, ...), so routing this through the same decode-as-text path
+        # as every other topic would reject nearly every real upload with
+        # "Failed to decode message payload" before _handle_local_upload
+        # ever saw it.
+        if message.topic.startswith(TOPIC_LOCAL_UPLOAD_PREFIX):
+            self._handle_local_upload(message.topic, message.payload)
+            return
+
         try:
             payload = message.payload.decode('utf-8')
         except UnicodeDecodeError as e:
@@ -1097,6 +1128,42 @@ class BlynkAgent:
             logger.info("OTA update handed off for apply")
         else:
             logger.error("OTA update failed")
+
+    def _handle_local_upload(self, topic: str, payload: bytes) -> None:
+        """Proxies a local app's raw file bytes to Blynk's HTTP-only Device
+        API upload endpoint (docs.blynk.io/en/blynk.cloud/device-https-api/
+        upload-a-file - confirmed 200 OK returns the resulting URL as plain
+        text, not JSON; errors come back as {"error":{"message":...}}).
+        Deliberately ignorant of what's being uploaded or why - same
+        generic-infrastructure principle as the OTA/ping/reboot/redirect
+        handling above. Filename comes from the topic suffix (see
+        TOPIC_LOCAL_UPLOAD_PREFIX's own comment for why that matters),
+        falling back to a timestamp if published to the bare prefix with
+        no filename at all."""
+        filename = topic[len(TOPIC_LOCAL_UPLOAD_PREFIX):] or f"upload_{int(time.time())}"
+        if not payload:
+            logger.error(f"Local upload '{filename}' had an empty payload")
+            self.client.publish(TOPIC_LOCAL_UPLOAD_RESULT, "[error] empty upload", qos=1)
+            return
+        try:
+            response = requests.post(
+                f"https://{self.config.effective_server()}/external/api/upload",
+                params={"token": self.config.auth_token},
+                files={"upfile": (filename, payload)},
+                timeout=30,
+            )
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Local upload '{filename}' failed: {e}")
+            self.client.publish(TOPIC_LOCAL_UPLOAD_RESULT, f"[error] {e}", qos=1)
+            return
+
+        if response.status_code == 200:
+            url = response.text.strip()
+            logger.info(f"Local upload '{filename}' proxied to Blynk Cloud: {url}")
+            self.client.publish(TOPIC_LOCAL_UPLOAD_RESULT, url, qos=1)
+        else:
+            logger.error(f"Local upload '{filename}' failed ({response.status_code}): {response.text}")
+            self.client.publish(TOPIC_LOCAL_UPLOAD_RESULT, f"[error] {response.text.strip()}", qos=1)
 
     def _handle_reboot(self, payload: str) -> None:
         logger.warning(f"Reboot requested via downlink/reboot: {payload!r}")

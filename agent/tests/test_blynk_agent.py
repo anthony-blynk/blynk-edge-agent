@@ -364,3 +364,110 @@ class TestRunTerminalCommand:
 
         assert captured_cmd[:3] == ["nsenter", "--target", "1"]
         assert captured_cmd[-1] == "ls -la"
+
+
+class TestOnMessageBinaryRouting:
+    def test_upload_topic_bypasses_utf8_decode(self, agent_instance, monkeypatch):
+        # Regression guard: raw file bytes are essentially never valid
+        # UTF-8, so this topic must be routed to _handle_local_upload
+        # BEFORE the generic decode-as-text path every other topic goes
+        # through - not after, or every real upload would be silently
+        # rejected as "Failed to decode message payload".
+        handler = MagicMock()
+        monkeypatch.setattr(agent_instance, "_handle_local_upload", handler)
+        invalid_utf8 = b"\xff\xfe\x00\x01not valid utf-8 image bytes"
+
+        agent_instance._on_message(None, None, FakeMessage("local/blynk/upload/photo.jpg", invalid_utf8))
+
+        handler.assert_called_once_with("local/blynk/upload/photo.jpg", invalid_utf8)
+
+
+class TestHandleLocalUpload:
+    def _fake_response(self, status_code=200, text=""):
+        response = MagicMock()
+        response.status_code = status_code
+        response.text = text
+        return response
+
+    def test_success_publishes_resulting_url(self, agent_instance, monkeypatch):
+        agent_instance.config.effective_server.return_value = "fra1.blynk.cloud"
+        agent_instance.config.auth_token = "test-token"
+        response = self._fake_response(200, text="https://fra1.blynk.cloud/device_uploads/1/abc.png\n")
+        monkeypatch.setattr(agent.requests, "post", lambda *a, **kw: response)
+
+        agent_instance._handle_local_upload("local/blynk/upload/photo.jpg", b"fake-image-bytes")
+
+        agent_instance.client.publish.assert_called_once_with(
+            agent.TOPIC_LOCAL_UPLOAD_RESULT,
+            "https://fra1.blynk.cloud/device_uploads/1/abc.png",
+            qos=1,
+        )
+
+    def test_uses_filename_from_topic_and_real_credentials(self, agent_instance, monkeypatch):
+        agent_instance.config.effective_server.return_value = "fra1.blynk.cloud"
+        agent_instance.config.auth_token = "test-token"
+        captured = {}
+
+        def fake_post(url, params=None, files=None, **kwargs):
+            captured["url"] = url
+            captured["params"] = params
+            captured["files"] = files
+            return self._fake_response(200, text="https://x/y.png")
+
+        monkeypatch.setattr(agent.requests, "post", fake_post)
+
+        agent_instance._handle_local_upload("local/blynk/upload/photo.jpg", b"fake-bytes")
+
+        assert captured["url"] == "https://fra1.blynk.cloud/external/api/upload"
+        assert captured["params"] == {"token": "test-token"}
+        assert captured["files"]["upfile"][0] == "photo.jpg"
+        assert captured["files"]["upfile"][1] == b"fake-bytes"
+
+    def test_no_filename_in_topic_falls_back_to_timestamp(self, agent_instance, monkeypatch):
+        agent_instance.config.effective_server.return_value = "fra1.blynk.cloud"
+        agent_instance.config.auth_token = "test-token"
+        captured = {}
+        monkeypatch.setattr(
+            agent.requests, "post",
+            lambda url, params=None, files=None, **kw: captured.update(files=files) or self._fake_response(200, "https://x/y"),
+        )
+
+        agent_instance._handle_local_upload("local/blynk/upload/", b"fake-bytes")
+
+        assert captured["files"]["upfile"][0].startswith("upload_")
+
+    def test_empty_payload_rejected_without_calling_blynk(self, agent_instance, monkeypatch):
+        post = MagicMock()
+        monkeypatch.setattr(agent.requests, "post", post)
+
+        agent_instance._handle_local_upload("local/blynk/upload/photo.jpg", b"")
+
+        post.assert_not_called()
+        published = agent_instance.client.publish.call_args[0][1]
+        assert "error" in published
+
+    def test_blynk_error_response_surfaced(self, agent_instance, monkeypatch):
+        agent_instance.config.effective_server.return_value = "fra1.blynk.cloud"
+        agent_instance.config.auth_token = "bad-token"
+        response = self._fake_response(400, text='{"error":{"message":"Invalid token."}}')
+        monkeypatch.setattr(agent.requests, "post", lambda *a, **kw: response)
+
+        agent_instance._handle_local_upload("local/blynk/upload/photo.jpg", b"fake-bytes")
+
+        published = agent_instance.client.publish.call_args[0][1]
+        assert "error" in published
+        assert "Invalid token" in published
+
+    def test_network_failure_surfaced_not_raised(self, agent_instance, monkeypatch):
+        agent_instance.config.effective_server.return_value = "fra1.blynk.cloud"
+        agent_instance.config.auth_token = "test-token"
+
+        def raise_connection_error(*a, **kw):
+            raise agent.requests.exceptions.ConnectionError("DNS failure")
+
+        monkeypatch.setattr(agent.requests, "post", raise_connection_error)
+
+        agent_instance._handle_local_upload("local/blynk/upload/photo.jpg", b"fake-bytes")  # must not raise
+
+        published = agent_instance.client.publish.call_args[0][1]
+        assert "error" in published

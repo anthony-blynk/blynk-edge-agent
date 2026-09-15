@@ -15,14 +15,6 @@ Design discussed (not yet built - deliberately deferred, non-trivial): mirror Te
 
 Also worth watching: there's an internal Blynk roadmap item (currently delayed) for OTA to support multiple separate artifacts/channels for a device, rather than everything living in one `docker-compose.yml`. If that ships with its own natural separation between "update the Blynk-managed stack" and "update a user application," it could make this whole check unnecessary (or reshape it significantly) - worth checking that design before building the above from scratch.
 
-## Blynk HTTP file-upload proxy in agent.py
-
-Give `agent.py` a generic, app-agnostic local topic (e.g. `local/blynk/upload`) that proxies to Blynk's HTTP-only Device API - starting with [file upload](https://docs.blynk.io/en/blynk.cloud/device-https-api/upload-a-file) (`POST /external/api/upload?token=...`, multipart field `upfile`, 5MB/file, 10 files held per device). A local app publishes raw bytes to that topic; the agent (which already holds the token, to render the mqtt-bridge config) makes the authenticated HTTP call and publishes the resulting URL back on a reply topic (e.g. `local/blynk/upload/result`).
-
-Why: MQTT's device API has no file-upload capability, only the HTTPS API does - which needs the raw token. The project's whole security model is that only mqtt-bridge (and now, by extension, the agent) ever holds the token; local apps never do. Came up while discussing a camera-detection demo that wanted to push captured frames to Blynk (see `examples/camera-detector/`).
-
-Keep the proxy itself ignorant of what's being uploaded or why - same generic-infrastructure principle as the existing OTA/ping/reboot/redirect handling, or how mqtt-bridge bridges `ds/#` traffic without caring what a datastream means. Don't bake in app-specific assumptions (e.g. camera-frame-specific topics/logic) the way an earlier version of this idea wrongly did.
-
 ## OTA rollback: post-start health check, not just apply-failure
 
 `ComposeManager`/`run_apply_only` in `agent.py` already roll back to the last backed-up `docker-compose.yml` when `docker compose up -d` itself fails (non-zero exit - bad image ref, compose syntax error, etc.) - this part is done, not a gap. What's missing is the case where `up -d` succeeds but the new container then crash-loops or never becomes healthy afterward - nothing currently watches for that, so a device can end up "successfully applied" an OTA that's actually broken. Every comparable fleet-management system that came up while researching this (balena's post-boot health-check rollback on top of its unbootable-detection; Home Assistant OS's RAUC boot-attempt-counted fallback; AWS Greengrass's `FailureHandlingPolicy: ROLLBACK`, which explicitly covers a component that fails to report healthy, not just one that fails to start) treats this as a baseline expectation.

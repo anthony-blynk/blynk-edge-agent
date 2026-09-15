@@ -50,7 +50,7 @@ flowchart LR
 - **mqtt-bridge** and **agent** both run as Docker containers, managed by the same `docker-compose.yml` the agent OTA-updates.
 - **mqtt-bridge** bridges the local broker to Blynk Cloud. Only mqtt-bridge holds the Blynk auth token (for that cloud bridge connection) - anything else on the device just connects to the local broker on plain, unauthenticated MQTT. Your own apps never need to know about Blynk credentials at all.
 - That local broker is only reachable on the device itself (`127.0.0.1:1883`) - nothing outside the device can connect to it.
-- **agent** subscribes to Blynk's downlink control topics: `downlink/ota/json` (downloads, validates, and applies a new `docker-compose.yml`, with automatic rollback on failure), `downlink/ping`, `downlink/reboot`, `downlink/redirect`, and `downlink/reconfigure`.
+- **agent** subscribes to Blynk's downlink control topics: `downlink/ota/json` (downloads, validates, and applies a new `docker-compose.yml`, with automatic rollback on failure), `downlink/ping`, `downlink/reboot`, `downlink/redirect`, and `downlink/reconfigure` - plus a local-only `local/blynk/upload/<filename>` topic that proxies file uploads to Blynk Cloud on behalf of your own apps (see [File uploads](#file-uploads)).
 - You can add your own service(s) to `docker-compose.yml` alongside mqtt-bridge and agent, and/or just run your own programs directly on the device (outside Docker) - either way, they talk to the local broker, which is already bridged to Blynk. See `test/` for minimal pub/sub examples.
 - Blynk's own topics (`ds/#`, `downlink/#`, etc. - see [the Blynk MQTT API docs](https://docs.blynk.io/en/blynk.cloud-mqtt-api/device-mqtt-api/topic-structure)) are what actually reach Blynk Cloud through the bridge. Your apps are free to use any other topics on the local broker too - those just stay local and never interact with Blynk at all.
 
@@ -95,6 +95,16 @@ Live health metrics - CPU usage, memory usage, disk usage, temperature, uptime, 
 
 To set it up, create these datastreams for the device's template: the six system-info fields above (String), `AgentCPUUsage`/`AgentMemUsage`/`AgentDiskUsage`/`AgentSignalQuality` (Double, 0-100), `AgentTemperature` (Double, 0-110), `AgentUptime` (Double, seconds - a Label widget with a custom mapping/formatter reads better than raw seconds), `AgentConnectionType`/`AgentIPAddress` (String), and `AgentDiagnosticsEnabled` (Integer, 0-1, with a Switch widget - reporting runs even without this widget added at all, since the agent treats no stored value as "on"; add the widget if you want to be able to turn it off). Add Label/Gauge/History Graph widgets bound to whichever of these you want visible on the dashboard.
 
+## File uploads
+
+MQTT's Device API has no file-upload capability - only Blynk's HTTPS Device API does, and that needs the raw auth token, which your own apps never hold (see [Security](#security)). The agent proxies this: publish a file's raw bytes to `local/blynk/upload/<filename>` on the local broker, and the agent uploads it to Blynk Cloud on your app's behalf, publishing the resulting URL (or an error, prefixed `[error]`) back on `local/blynk/upload_result`. The filename is part of the topic, not just implied, because Blynk's own API overwrites a previous upload of the same name (and only retains 10 files per device) - reusing a fixed name would silently defeat that.
+
+```
+python3 -c "import paho.mqtt.publish as publish; publish.single('local/blynk/upload/photo.jpg', payload=open('photo.jpg','rb').read(), hostname='localhost', port=1883)"
+```
+
+Subscribe to `local/blynk/upload_result` beforehand to see the resulting URL. Same 5MB-per-file limit as Blynk's own API, and it's a Pro/Production/Enterprise-only endpoint on Blynk's side - the agent surfaces whatever error Blynk itself returns (e.g. `[error] Invalid token.`) rather than guessing at limits itself.
+
 ## Remote terminal (on by default for now)
 
 Blynk's [Terminal widget](https://docs.blynk.io/en/blynk.console/widgets-console/terminal) can give you a real shell on the device, entirely over the same outbound connection the agent already uses - no inbound port, no VPN, nothing exposed to the network beyond what's already there for Blynk itself. Commands run via `nsenter` into the host's own namespaces, so `pwd`/`ls`/`ps`/etc. reflect the actual device, not just the agent's own container.
@@ -113,7 +123,7 @@ To set it up, create two datastreams for the device's template - `AgentTerminal`
 This is a security-focused project - the local broker and the OTA path are both treated as trust boundaries:
 
 - **The local broker stays fully anonymous for ordinary traffic, but `downlink/#` is locked down.** Only mqtt-bridge's own local connection (write) and the agent's own local connection (read) can touch it, each authenticating with its own per-device credentials generated on first boot and never shared with anything else on the device. Without this, any local process could forge a fake OTA/reboot/terminal command just by publishing to the same topic the real bridge uses. Every other local topic (`ds/#`, `event/#`, etc.) stays anonymous - your own apps never need credentials to use Blynk.
-- **Only mqtt-bridge ever holds the real Blynk auth token.** The agent, your own apps, and anything else on the device only ever talk to the local broker - never the actual Blynk credentials.
+- **Only mqtt-bridge and the agent ever hold the real Blynk auth token** (the agent needs it to render mqtt-bridge's own config, and to proxy file uploads - see [File uploads](#file-uploads)). Your own apps and anything else on the device only ever talk to the local broker - never the actual Blynk credentials.
 - **The local broker is never exposed to the network** - it only listens on `127.0.0.1`, so nothing outside the device can reach it regardless of the ACL above.
 - **The cloud connection is TLS** (`mqttv5` over `8883`, with the CA bundle verified) - never plaintext.
 - **Remote Terminal access needs two independent things to be true, not one** - a capability gate in `docker-compose.yml` (only changeable via an OTA push or a manual edit on the device) and a per-session Switch widget in the app. Compromising your Blynk account credentials alone is never enough to get a shell on a device that never had the capability turned on - see [Remote terminal](#remote-terminal-on-by-default-for-now) above.
