@@ -61,7 +61,29 @@ fi
 """
 
 
-def run_on_device(device: dict) -> tuple[bool, str]:
+# Reads the *deployed* stack's version straight from /opt/blynk/docker-compose.yml
+# - deliberately not the test-repo checkout's own version (a separate,
+# disposable clone used only to run the test suite itself, unrelated to
+# what's actually running on the device - see REMOTE_SCRIPT's own comment).
+# Plain grep/sed rather than a YAML parser, matching the same
+# lightweight-regex-extraction style device-tests/conftest.py's own
+# _detect_broker_port already uses for this file.
+GET_VERSION_SCRIPT = (
+    r"grep -A1 '^x-stack:' /opt/blynk/docker-compose.yml 2>/dev/null | "
+    r"grep version | sed -E 's/.*\"(.*)\".*/\1/'"
+)
+
+
+def get_deployed_version(client: paramiko.SSHClient) -> str:
+    try:
+        _, stdout, _ = client.exec_command(GET_VERSION_SCRIPT, timeout=10)
+        version = stdout.read().decode(errors="replace").strip()
+        return version or "unknown"
+    except Exception:
+        return "unknown"
+
+
+def run_on_device(device: dict) -> tuple[bool, str, str]:
     client = paramiko.SSHClient()
     client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
     connect_kwargs = {
@@ -77,13 +99,15 @@ def run_on_device(device: dict) -> tuple[bool, str]:
     try:
         client.connect(**connect_kwargs)
     except Exception as e:
-        return False, f"SSH connection failed: {e}"
+        return False, f"SSH connection failed: {e}", "unknown"
 
     try:
+        version = get_deployed_version(client)
+        print(f"    agent version: {version}", flush=True)
         _, stdout, stderr = client.exec_command(REMOTE_SCRIPT, timeout=300)
         output = stdout.read().decode(errors="replace") + stderr.read().decode(errors="replace")
         exit_code = stdout.channel.recv_exit_status()
-        return exit_code == 0, output
+        return exit_code == 0, output, version
     finally:
         client.close()
 
@@ -100,18 +124,18 @@ def main():
     for device in devices:
         name = device.get("name", device["host"])
         print(f"--- {name} ({device['host']}) ---", flush=True)
-        ok, output = run_on_device(device)
-        results.append((name, ok))
+        ok, output, version = run_on_device(device)
+        results.append((name, ok, version))
         if args.verbose or not ok:
             print(output)
         print(f"{'PASSED' if ok else 'FAILED'}\n", flush=True)
 
     print("=" * 40)
     print("Summary:")
-    for name, ok in results:
-        print(f"  {'PASS' if ok else 'FAIL'}  {name}")
+    for name, ok, version in results:
+        print(f"  {'PASS' if ok else 'FAIL'}  {name}  (v{version})")
 
-    if any(not ok for _, ok in results):
+    if any(not ok for _, ok, _ in results):
         sys.exit(1)
 
 
