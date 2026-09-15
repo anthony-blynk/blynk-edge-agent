@@ -15,3 +15,7 @@ pi-image-builder/rpi-image-gen/
 # must never be committed. Only fleet.example.json (no real credentials)
 # is tracked.
 device-tests/fleet.json
+
+__pycache__/
+*.pyc
+.pytest_cache/

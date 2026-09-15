@@ -323,13 +323,24 @@ class BlynkConfig:
         provisioning hands over a token (and possibly a new server), or
         when reconfigure/reset clears one back out. `or ''` matters here:
         an unformatted None would write the literal text "None", which
-        reloads as a truthy non-empty string and defeats is_provisioned()."""
-        env_path.write_text(
+        reloads as a truthy non-empty string and defeats is_provisioned().
+
+        Written via a temp file + atomic rename (same pattern already used
+        for docker-compose.yml updates - see ComposeManager.update_from_url)
+        instead of a direct in-place write, so a power cut mid-write can't
+        leave a truncated/corrupted blynk.env behind that fails to reload
+        on next boot. chmod 0600 explicitly on the temp file first, since a
+        freshly-created file doesn't inherit the target's existing
+        permissions the way an in-place write would have."""
+        new_path = env_path.with_suffix(".new")
+        new_path.write_text(
             f"BLYNK_SERVER={self.server or ''}\n"
             f"BLYNK_TEMPLATE_ID={self.template_id or ''}\n"
             f"BLYNK_AUTH_TOKEN={self.auth_token or ''}\n"
             f"BLYNK_VENDOR_PREFIX={self.vendor_prefix}\n"
         )
+        os.chmod(new_path, 0o600)
+        new_path.replace(env_path)
 
     def effective_server(self) -> str:
         """The bridge host in effect right now - a downlink/redirect
