@@ -27,6 +27,8 @@ class TestApplyViaHelper:
                 return _fake_proc(stdout="ghcr.io/anthony-blynk/blynk-agent:2.3.4\n")
             if cmd[:2] == ["docker", "inspect"]:
                 return _fake_proc(stdout="blynk_default\n")
+            if cmd[:2] == ["docker", "rm"]:
+                return _fake_proc(returncode=0)
             if cmd[:2] == ["docker", "run"]:
                 return _fake_proc(returncode=0)
             raise AssertionError(f"unexpected command: {cmd}")
