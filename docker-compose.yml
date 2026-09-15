@@ -26,7 +26,7 @@ x-stack:
 services:
   mqtt-bridge:
     build: ./mqtt-bridge
-    image: ghcr.io/anthony-blynk/blynk-mqtt-bridge:2.3.5
+    image: ghcr.io/anthony-blynk/blynk-mqtt-bridge:2.3.6-rc1
     restart: unless-stopped
     ports:
       - "127.0.0.1:1883:1883"
@@ -37,7 +37,7 @@ services:
 
   agent:
     build: ./agent
-    image: ghcr.io/anthony-blynk/blynk-agent:2.3.5
+    image: ghcr.io/anthony-blynk/blynk-agent:2.3.6-rc1
     restart: unless-stopped
     depends_on:
       - mqtt-bridge
