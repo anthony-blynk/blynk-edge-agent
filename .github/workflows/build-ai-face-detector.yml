@@ -9,6 +9,7 @@ on:
     branches: [master]
     paths:
       - "examples/ai-face-detector/**"
+      - ".github/workflows/build-ai-face-detector.yml"
 
 jobs:
   build:
@@ -37,7 +38,13 @@ jobs:
         uses: docker/build-push-action@v5
         with:
           context: ./examples/ai-face-detector
-          platforms: linux/amd64,linux/arm64,linux/arm/v7
+          # No linux/arm/v7 (unlike build-and-push.yml's agent/mqtt-bridge
+          # images) - opencv-python-headless has no prebuilt wheel for
+          # 32-bit ARM, so pip falls back to building it (and numpy) from
+          # source there, which then fails without a build toolchain
+          # (ninja) present. Every real device this project actually
+          # targets (Pi 5, Jetson Orin, x86) is 64-bit anyway.
+          platforms: linux/amd64,linux/arm64
           push: true
           tags: |
             ghcr.io/${{ github.repository_owner }}/ai-face-detector:latest
