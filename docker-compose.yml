@@ -81,7 +81,7 @@ services:
   # published independently of this project's own stack version - see
   # examples/ai-face-detector/VERSION and .github/workflows/build-ai-face-detector.yml.
   # ai-face-detector:
-  #   image: ghcr.io/anthony-blynk/ai-face-detector:1.0.0
+  #   image: ghcr.io/anthony-blynk/ai-face-detector:1.0.1
   #   restart: unless-stopped
   #   depends_on:
   #     - mqtt-bridge

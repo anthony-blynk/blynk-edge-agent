@@ -9,7 +9,9 @@ Uses OpenCV's YuNet DNN face detector (not the older Haar cascade) - noticeably 
 Nothing here creates datastreams or widgets automatically - you need to:
 
 1. Create a `FaceDetected` datastream (integer, 0/1) if you want the on/off state on a dashboard - bind it to a Switch/LED widget, or just watch it in the console.
-2. Create a `FaceSnapshot` datastream (any type works - it's only used to carry the `url` property, not read as a value itself) and add an Image widget bound to it. The agent publishes the snapshot's URL to `ds/FaceSnapshot/prop/url` each time a new one is uploaded.
+2. Create a `FaceSnapshot` datastream (any type works - it's only used to carry the `urls` property, not read as a value itself) and add an **Image Gallery** widget bound to it (a plain Image widget won't pick up the update - see the note on `prop/urls` below). The agent publishes the snapshot's URL to `ds/FaceSnapshot/prop/urls` each time a new one is uploaded; with just one URL, the gallery simply shows that single image.
+
+   Confirmed on real hardware: `ds/FaceSnapshot/prop/url` (singular) gets silently accepted and stored (visible in the datastream's own property history) but is **not** what the Image Gallery widget actually renders from - only `prop/urls` (plural) is. `url` with an index is a real Gallery property in Blynk's firmware SDK, for updating one slot in a list, but MQTT has no way to supply that index at all - only whole-value `url` or whole-list `urls` are exposed over MQTT.
 
 ## Enabling on a device
 

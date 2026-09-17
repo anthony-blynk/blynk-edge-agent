@@ -16,12 +16,21 @@ POLL_INTERVAL = 0.1
 # not a limitation to work around.
 SNAPSHOT_UPLOAD_TOPIC = "local/blynk/upload/face_snapshot.jpg"
 UPLOAD_RESULT_TOPIC = "local/blynk/upload_result"
-# The Image widget's URL lives on this property topic, not a plain ds/
-# publish - see docs.blynk.io's MQTT device API, "datastream properties"
-# (ds/{DatastreamName}/prop/{property}, single value as plain text). Create
-# a "FaceSnapshot" datastream and an Image (or Image Gallery) widget bound
-# to it in the Blynk console - nothing here creates that automatically.
-SNAPSHOT_PROPERTY_TOPIC = "ds/FaceSnapshot/prop/url"
+# The Image Gallery widget's URL lives on this property topic, not a plain
+# ds/ publish - see docs.blynk.io's MQTT device API, "datastream
+# properties" (ds/{DatastreamName}/prop/{property}, single value as plain
+# text). Deliberately "urls" (plural), not "url" (singular) - confirmed on
+# real hardware that "url" is silently accepted and stored (visible in the
+# datastream's own property history) but is NOT what the widget actually
+# renders from; "urls" is. "url" with an index is a real Gallery property
+# in the firmware SDK (Blynk.setProperty(pin, "url", index, ...), for
+# updating one slot in the list), but MQTT has no way to supply that index
+# at all - only "url" (whole, no index) or "urls" (replace the whole list)
+# are exposed over MQTT. For a single image, "urls" just takes that one
+# URL as its own payload, no list/array encoding needed. Create a
+# "FaceSnapshot" datastream and an Image Gallery widget bound to it in the
+# Blynk console first - nothing here creates that automatically.
+SNAPSHOT_PROPERTY_TOPIC = "ds/FaceSnapshot/prop/urls"
 # However often a face flickers in and out of frame, an upload is a real
 # HTTPS call proxied through the agent to Blynk Cloud - this puts a floor
 # under how often that actually fires, independent of the frame-level
