@@ -1,15 +1,15 @@
-name: Build and push ai-face-detector example
+name: Build and push edge-ai-face-detector example
 
 # Deliberately its own workflow, not folded into build-and-push.yml: this
 # example is versioned and released independently of the core agent/
-# mqtt-bridge stack (see examples/ai-face-detector/VERSION), so it should
+# mqtt-bridge stack (see examples/edge-ai-face-detector/VERSION), so it should
 # only rebuild when its own files change, not on every edge-agent commit.
 on:
   push:
     branches: [master]
     paths:
-      - "examples/ai-face-detector/**"
-      - ".github/workflows/build-ai-face-detector.yml"
+      - "examples/edge-ai-face-detector/**"
+      - ".github/workflows/build-edge-ai-face-detector.yml"
 
 jobs:
   build:
@@ -22,7 +22,7 @@ jobs:
 
       - name: Read example version
         id: version
-        run: echo "version=$(cat examples/ai-face-detector/VERSION)" >> "$GITHUB_OUTPUT"
+        run: echo "version=$(cat examples/edge-ai-face-detector/VERSION)" >> "$GITHUB_OUTPUT"
 
       - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
@@ -34,10 +34,10 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and push ai-face-detector
+      - name: Build and push edge-ai-face-detector
         uses: docker/build-push-action@v5
         with:
-          context: ./examples/ai-face-detector
+          context: ./examples/edge-ai-face-detector
           # No linux/arm/v7 (unlike build-and-push.yml's agent/mqtt-bridge
           # images) - opencv-python-headless has no prebuilt wheel for
           # 32-bit ARM, so pip falls back to building it (and numpy) from
@@ -47,7 +47,7 @@ jobs:
           platforms: linux/amd64,linux/arm64
           push: true
           tags: |
-            ghcr.io/${{ github.repository_owner }}/ai-face-detector:latest
-            ghcr.io/${{ github.repository_owner }}/ai-face-detector:${{ steps.version.outputs.version }}
+            ghcr.io/${{ github.repository_owner }}/edge-ai-face-detector:latest
+            ghcr.io/${{ github.repository_owner }}/edge-ai-face-detector:${{ steps.version.outputs.version }}
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}

@@ -1,4 +1,4 @@
-# AI Face Detector example
+# Edge AI Face Detector example
 
 Watches a USB webcam, publishes `ds/FaceDetected` (0/1) whenever a face enters or leaves frame, and uploads a snapshot of the most recent detection to Blynk Cloud via the edge-agent's [file-upload proxy](../../README.md#file-uploads).
 
@@ -15,7 +15,7 @@ Nothing here creates datastreams or widgets automatically - you need to:
 
 ## Enabling on a device
 
-Published as a prebuilt image (`ghcr.io/anthony-blynk/ai-face-detector`) - nothing to build yourself. Uncomment the `ai-face-detector` service in the root [`docker-compose.yml`](../../docker-compose.yml) on the *one* device that actually has a camera, then `docker compose up -d` there directly.
+Published as a prebuilt image (`ghcr.io/anthony-blynk/edge-ai-face-detector`) - nothing to build yourself. Uncomment the `edge-ai-face-detector` service in the root [`docker-compose.yml`](../../docker-compose.yml) on the *one* device that actually has a camera, then `docker compose up -d` there directly.
 
 **Don't push this uncommented via a fleet-wide OTA update.** Every device pulls the same `docker-compose.yml` on its next OTA - a device without `/dev/video0` would fail to start this service, which can fail the whole apply and trigger a rollback. This is a per-device, opt-in example, enabled by hand on that device's own deployed copy of the file, not something to commit uncommented into the tracked stack config.
 
@@ -23,7 +23,7 @@ Requires a USB webcam at `/dev/video0`. A Raspberry Pi Camera Module (CSI, libca
 
 ## Tuning
 
-`DEBOUNCE_FRAMES`, `POLL_INTERVAL`, `UPLOAD_COOLDOWN`, and `JPEG_QUALITY` (see `camera_detect.py`) aren't runtime/env-configurable - changing them means editing the script, bumping `VERSION`, and pushing to master (which rebuilds and republishes the image via its own [workflow](../../.github/workflows/build-ai-face-detector.yml), independent of the core agent/mqtt-bridge release cycle).
+`DEBOUNCE_FRAMES`, `POLL_INTERVAL`, `UPLOAD_COOLDOWN`, and `JPEG_QUALITY` (see `camera_detect.py`) aren't runtime/env-configurable - changing them means editing the script, bumping `VERSION`, and pushing to master (which rebuilds and republishes the image via its own [workflow](../../.github/workflows/build-edge-ai-face-detector.yml), independent of the core agent/mqtt-bridge release cycle).
 
 - `DEBOUNCE_FRAMES` / `POLL_INTERVAL` - how many consecutive agreeing frames are required before flipping the published detection state, and how often frames are read.
 - `UPLOAD_COOLDOWN` (default 30s) - a floor on how often a snapshot actually gets uploaded, independent of how often detection flickers - each upload is a real HTTPS call proxied through the agent to Blynk Cloud, not something to fire on every frame.
