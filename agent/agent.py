@@ -68,7 +68,7 @@ MQTT_PORT = int(os.getenv("MQTT_PORT", "1883"))
 # Blynk account alone should never be enough to get a shell on a device
 # that never had this turned on; that requires a second, harder action
 # (pushing a valid OTA update). Absent from the tracked docker-compose.yml
-# on purpose - this is a per-device opt-in (see the camera-detector
+# on purpose - this is a per-device opt-in (see the ai-face-detector
 # example for the same pattern), not something the whole fleet gets by
 # default from a normal install/update.
 TERMINAL_CAPABILITY_ENABLED = os.getenv("AGENT_TERMINAL_ENABLED", "false").lower() == "true"
