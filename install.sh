@@ -262,6 +262,17 @@ if [ -n "$HOST_MQTT_PORT" ] && command -v ss >/dev/null 2>&1 && ss -tln 2>/dev/n
   echo "Remapped mqtt-bridge's host port to $NEW_MQTT_PORT in $STATE_DIR/docker-compose.yml"
 fi
 
+# Off by default (see docker-compose.yml's own comment next to it) - needs
+# real, non-trivial Blynk-side setup first (an Enterprise org, the
+# template's own "Enable for Gateway API" toggle, a RemoteDevices Table
+# metadata field) before it does anything at all, so this is opt-in rather
+# than discover-by-trying like Terminal above.
+read -r -p "Will this device act as an MQTT Gateway for other Blynk devices? Requires Blynk Enterprise. [y/N] " ENABLE_GATEWAY </dev/tty
+if [ "$ENABLE_GATEWAY" = "Y" ] || [ "$ENABLE_GATEWAY" = "y" ]; then
+  sed -i "s/AGENT_GATEWAY_ENABLED=false/AGENT_GATEWAY_ENABLED=true/" "$STATE_DIR/docker-compose.yml"
+  echo "Enabled AGENT_GATEWAY_ENABLED in $STATE_DIR/docker-compose.yml"
+fi
+
 echo "Starting stack..."
 docker compose -f "$STATE_DIR/docker-compose.yml" up -d
 

@@ -118,12 +118,28 @@ Both need to be on for commands to run - the terminal always replies with a `[te
 
 To set it up, create two datastreams for the device's template - `AgentTerminal` (String, with a Terminal widget) and `AgentTerminalEnabled` (Integer, 0-1, with a Switch widget). The capability itself is already on by default (see above); flip the Switch widget on when you want to actually use it.
 
+## MQTT Gateway (remote devices)
+
+**Requires a Blynk Enterprise org - not something to try on an ordinary Blynk Cloud account.** Lets this device act as a gateway for other, separate devices (e.g. wireless sensors with no direct internet connection of their own) using Blynk's [MQTT Gateway API](https://docs.blynk.io/en/blynk.cloud-mqtt-api/mqtt-gateway-api) - each one shows up in Blynk as its own, independent device, not sharing this one's identity. This device still keeps its own normal device identity for its own metrics throughout; gateway traffic is additional, not a replacement.
+
+Off by default (`AGENT_GATEWAY_ENABLED=false` on the `agent` service, same capability-gate shape as Terminal above - an install-time prompt or a manual `docker-compose.yml` edit turns it on). Three independent things all need to be true before any of this actually does anything:
+
+1. **Blynk-side**: your org is Enterprise tier, and this device's own template has "Enable for Gateway API" turned on in the Blynk console.
+2. **A registry**: a `RemoteDevices` metadata field (type **Table**, columns `name,token`) on this device, managed entirely from the Blynk console - one row per remote device, each created the normal way (console or Blynk's HTTP device-creation API) under whatever template fits it, giving you its own real auth token to put in the table.
+3. **The capability flag** above, on this device.
+
+The agent only ever switches its bridge connection to gateway mode after actually confirming the `RemoteDevices` field exists (even an empty table counts) - never just because the local flag is set. Guessing wrong here would risk the bridge's entire connection being rejected, not just gateway traffic, since both share the one connection. If the flag is on but no confirmation ever arrives, it keeps retrying quietly and logs why, rather than breaking anything.
+
+Once confirmed, each registered device gets its own local topic namespace - publish/subscribe exactly like you would for this device's own `ds/`/`downlink/` topics, just under `remote/<name>/` instead (e.g. `remote/pump3-vibration/ds/Vibration`). Anonymous local access works the same way it does everywhere else in this project - no credentials needed to publish a remote device's data, though its own `downlink/#` stays read-only to anonymous clients, write-only to the bridge, mirroring the project's existing `downlink/#` protection.
+
+Newly added, not yet verified against real Enterprise-tier hardware - treat the first real attempt as iteration, the same way every other hardware-facing feature in this project needed a real-device pass to shake out.
+
 ## Security
 
 This is a security-focused project - the local broker and the OTA path are both treated as trust boundaries:
 
 - **The local broker stays fully anonymous for ordinary traffic, but `downlink/#` is locked down.** Only mqtt-bridge's own local connection (write) and the agent's own local connection (read) can touch it, each authenticating with its own per-device credentials generated on first boot and never shared with anything else on the device. Without this, any local process could forge a fake OTA/reboot/terminal command just by publishing to the same topic the real bridge uses. Every other local topic (`ds/#`, `event/#`, etc.) stays anonymous - your own apps never need credentials to use Blynk.
-- **Only mqtt-bridge and the agent ever hold the real Blynk auth token** (the agent needs it to render mqtt-bridge's own config, and to proxy file uploads - see [File uploads](#file-uploads)). Your own apps and anything else on the device only ever talk to the local broker - never the actual Blynk credentials.
+- **Only mqtt-bridge and the agent ever hold a real Blynk auth token** (the agent needs it to render mqtt-bridge's own config, and to proxy file uploads - see [File uploads](#file-uploads)). Your own apps and anything else on the device only ever talk to the local broker - never the actual Blynk credentials. In [Gateway mode](#mqtt-gateway-remote-devices), this extends to each registered remote device's own token too - those live in that device's Blynk-console-managed metadata and this device's rendered bridge config, never in anything a local app representing that remote device can read.
 - **The local broker is never exposed to the network** - it only listens on `127.0.0.1`, so nothing outside the device can reach it regardless of the ACL above.
 - **The cloud connection is TLS** (`mqttv5` over `8883`, with the CA bundle verified) - never plaintext.
 - **Remote Terminal access needs two independent things to be true, not one** - a capability gate in `docker-compose.yml` (only changeable via an OTA push or a manual edit on the device) and a per-session Switch widget in the app. Compromising your Blynk account credentials alone is never enough to get a shell on a device that never had the capability turned on - see [Remote terminal](#remote-terminal-on-by-default-for-now) above.

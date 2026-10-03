@@ -56,6 +56,13 @@ services:
       # entirely - at that point no Switch toggle can turn it back on
       # without an OTA push or a manual edit here.
       - AGENT_TERMINAL_ENABLED=true
+      # Off by default, unlike Terminal above - this one needs real,
+      # non-trivial Blynk-side setup first (an Enterprise org, "Enable for
+      # Gateway API" turned on for this device's own template, a
+      # RemoteDevices Table metadata field created) before it does
+      # anything at all, so there's no equivalent "safe to turn on and
+      # just try it" case. See the README's "MQTT Gateway" section.
+      - AGENT_GATEWAY_ENABLED=false
     volumes:
       - /opt/blynk:/opt/blynk
       - /var/run/docker.sock:/var/run/docker.sock
