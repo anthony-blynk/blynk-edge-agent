@@ -58,8 +58,8 @@ services:
       - AGENT_TERMINAL_ENABLED=true
       # Off by default, unlike Terminal above - this one needs real,
       # non-trivial Blynk-side setup first (an Enterprise org, "Enable for
-      # Gateway API" turned on for this device's own template, a
-      # RemoteDevices Table metadata field created) before it does
+      # Gateway API" turned on for this device's own template) plus a
+      # /opt/blynk/remote_devices.json registry file, before it does
       # anything at all, so there's no equivalent "safe to turn on and
       # just try it" case. See the README's "MQTT Gateway" section.
       - AGENT_GATEWAY_ENABLED=false
