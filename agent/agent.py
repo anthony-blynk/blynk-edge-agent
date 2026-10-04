@@ -1213,11 +1213,7 @@ class BlynkAgent:
             # routinely missed. Only probes when presumed disconnected -
             # a healthy connected state is left alone.
             if self._bridge_disconnected_since is not None and self._probe_cloud_reachable():
-                logger.info(
-                    "Blynk cloud reachable via direct probe - clearing presumed-"
-                    "disconnected state (the bridge-state notification is easy to "
-                    "miss right after a local broker restart)"
-                )
+                logger.info("Blynk cloud reachable via direct probe - clearing presumed-disconnected state")
                 self._bridge_disconnected_since = None
                 self._bridge_dns_refresh_attempted = False
             self._publish_device_info()
