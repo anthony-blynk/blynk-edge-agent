@@ -38,6 +38,23 @@ class TestParseRemoteDevicesCsv:
         # Admin-edited console data, not something to crash the agent over.
         assert agent._parse_remote_devices_csv("not,even,close\nto,a,real,header") == {}
 
+    def test_console_default_headers_are_accepted(self):
+        # Direct regression test: confirmed on real hardware that the
+        # Blynk console's own Table metadata editor defaults to "Name" and
+        # "AuthToken" as column headers, not the lowercase "name"/"token"
+        # this was first written against - this found zero devices before
+        # the fix, despite a real row being present.
+        result = agent._parse_remote_devices_csv(
+            "Index,Name,AuthToken\n0,AntsGatewayDevice1,63cH4PjtDdVhLlCOt_jEAdlSUUN_B8Ag\n"
+        )
+
+        assert result == {"AntsGatewayDevice1": "63cH4PjtDdVhLlCOt_jEAdlSUUN_B8Ag"}
+
+    def test_header_matching_is_case_insensitive(self):
+        result = agent._parse_remote_devices_csv("NAME,TOKEN\npump3,TOK123\n")
+
+        assert result == {"pump3": "TOK123"}
+
 
 class TestRenderRemoteBridgeTopics:
     def test_empty_devices_returns_empty_string(self):

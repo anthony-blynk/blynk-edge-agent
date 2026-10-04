@@ -246,18 +246,30 @@ topic write local/blynk/upload_result
 """
 
 
+_REMOTE_DEVICE_NAME_HEADERS = {"name"}
+_REMOTE_DEVICE_TOKEN_HEADERS = {"token", "authtoken", "auth_token"}
+
+
 def _parse_remote_devices_csv(payload: str) -> dict:
-    """Parses the RemoteDevices Table metadata field's value - a 'name,token'
-    CSV (header row required), one row per gateway sub-device, managed
+    """Parses the RemoteDevices Table metadata field's value - a CSV
+    (header row required), one row per gateway sub-device, managed
     entirely from the Blynk console (no local file/SSH access needed - see
-    MqttBridge.gateway_confirmed's own comment for why). Malformed/empty
-    rows are skipped rather than raising: this is admin-edited console
-    data, not something to crash the agent over."""
+    MqttBridge.gateway_confirmed's own comment for why). Column headers
+    are whatever the admin named them when creating the table (Blynk's own
+    docs: "the table's columns come from that file") - confirmed on real
+    hardware that the console's own UI defaults to "Name"/"AuthToken", not
+    the lowercase "name"/"token" this was first written against - so
+    header matching here is case-insensitive and accepts a couple of
+    reasonable variants rather than requiring one exact spelling.
+    Malformed/empty rows are skipped rather than raising: this is
+    admin-edited console data, not something to crash the agent over."""
     devices = {}
     reader = csv.DictReader(io.StringIO(payload))
     for row in reader:
-        name = (row.get("name") or "").strip()
-        token = (row.get("token") or "").strip()
+        normalized = {(key or "").strip().lower(): value for key, value in row.items()}
+        name = next((normalized[k] for k in _REMOTE_DEVICE_NAME_HEADERS if normalized.get(k)), "")
+        token = next((normalized[k] for k in _REMOTE_DEVICE_TOKEN_HEADERS if normalized.get(k)), "")
+        name, token = name.strip(), token.strip()
         if name and token:
             devices[name] = token
     return devices
