@@ -570,6 +570,11 @@ class MqttBridge:
             # WiFi, were both fine - only a container restart picks up the
             # host's current resolver.
             logger.info(f"Bridge config unchanged for {server}, restarting mqtt-bridge anyway after a WiFi (re)connect")
+        if remote_devices:
+            logger.info(
+                f"Gateway mode active (mgmt_device) - {len(remote_devices)} remote device(s) "
+                f"registered: {', '.join(sorted(remote_devices))}"
+            )
         self._restart_mqtt_bridge()
 
     def apply_redirect(self, new_server: str) -> None:
