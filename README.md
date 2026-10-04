@@ -129,8 +129,8 @@ Off by default (`AGENT_GATEWAY_ENABLED=false` on the `agent` service, same capab
 
    ```json
    {
-     "pump3-vibration": "63cH4PjtDdVhLlCOt_jEAdlSUUN_B8Ag",
-     "pump7-vibration": "ANOTHERDEVICESREALAUTHTOKEN1234"
+     "pump3-vibration": "ExampleRealAuthTokenFromItsOwnDevice01",
+     "pump7-vibration": "AnotherDevicesOwnRealAuthToken234567890"
    }
    ```
 
@@ -140,7 +140,7 @@ Gateway traffic runs over its own separate bridge connection (`mgmt_device`, a s
 
 Each registered device gets its own local topic namespace - publish/subscribe exactly like you would for this device's own `ds/`/`downlink/` topics, just under `remote/<name>/` instead (e.g. `remote/pump3-vibration/ds/Vibration`). Anonymous local access works the same way it does everywhere else in this project - no credentials needed to publish a remote device's data, though its own `downlink/#` stays read-only to anonymous clients, write-only to the bridge, mirroring the project's existing `downlink/#` protection.
 
-Newly added, not yet verified end-to-end against real Enterprise-tier hardware (a real registered device's data actually showing up as its own Blynk datastream) - treat the first real attempt as iteration, the same way every other hardware-facing feature in this project needed a real-device pass to shake out.
+Verified end-to-end against a real Enterprise/QA Blynk server: a registered device's own datastream value updates in the Blynk console after a plain local publish to `remote/<name>/ds/<Datastream>`.
 
 ## Security
 
