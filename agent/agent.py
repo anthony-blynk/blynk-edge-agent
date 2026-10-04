@@ -522,6 +522,15 @@ class MqttBridge:
         # restart (same convention as blynk.env), not a dedicated watch/poll
         # mechanism.
         remote_devices = _load_remote_devices() if GATEWAY_CAPABILITY_ENABLED else {}
+        # Logged unconditionally (same as "Loaded configuration for server:
+        # ..." elsewhere) - an operator shouldn't need to force a config
+        # change just to see current gateway state confirmed on every
+        # restart, not only when something actually changes.
+        if remote_devices:
+            logger.info(
+                f"Gateway mode active (mgmt_device) - {len(remote_devices)} remote device(s) "
+                f"registered: {', '.join(sorted(remote_devices))}"
+            )
         gateway_connection_block = ""
         if remote_devices:
             gateway_connection_block = GATEWAY_CONNECTION_TEMPLATE.format(
@@ -570,11 +579,6 @@ class MqttBridge:
             # WiFi, were both fine - only a container restart picks up the
             # host's current resolver.
             logger.info(f"Bridge config unchanged for {server}, restarting mqtt-bridge anyway after a WiFi (re)connect")
-        if remote_devices:
-            logger.info(
-                f"Gateway mode active (mgmt_device) - {len(remote_devices)} remote device(s) "
-                f"registered: {', '.join(sorted(remote_devices))}"
-            )
         self._restart_mqtt_bridge()
 
     def apply_redirect(self, new_server: str) -> None:
