@@ -246,30 +246,22 @@ topic write local/blynk/upload_result
 """
 
 
-_REMOTE_DEVICE_NAME_HEADERS = {"name"}
-_REMOTE_DEVICE_TOKEN_HEADERS = {"token", "authtoken", "auth_token"}
-
-
 def _parse_remote_devices_csv(payload: str) -> dict:
     """Parses the RemoteDevices Table metadata field's value - a CSV
-    (header row required), one row per gateway sub-device, managed
-    entirely from the Blynk console (no local file/SSH access needed - see
-    MqttBridge.gateway_confirmed's own comment for why). Column headers
-    are whatever the admin named them when creating the table (Blynk's own
-    docs: "the table's columns come from that file") - confirmed on real
-    hardware that the console's own UI defaults to "Name"/"AuthToken", not
-    the lowercase "name"/"token" this was first written against - so
-    header matching here is case-insensitive and accepts a couple of
-    reasonable variants rather than requiring one exact spelling.
-    Malformed/empty rows are skipped rather than raising: this is
-    admin-edited console data, not something to crash the agent over."""
+    (header row required) with "Name" and "AuthToken" columns, one row per
+    gateway sub-device, managed entirely from the Blynk console (no local
+    file/SSH access needed - see MqttBridge.gateway_confirmed's own
+    comment for why). These are the console's own actual default column
+    names when creating a Table metadata field (confirmed on real
+    hardware) - a table created with different column names won't parse,
+    by design, rather than guessing at alternate spellings. Malformed/
+    empty rows are skipped rather than raising: this is admin-edited
+    console data, not something to crash the agent over."""
     devices = {}
     reader = csv.DictReader(io.StringIO(payload))
     for row in reader:
-        normalized = {(key or "").strip().lower(): value for key, value in row.items()}
-        name = next((normalized[k] for k in _REMOTE_DEVICE_NAME_HEADERS if normalized.get(k)), "")
-        token = next((normalized[k] for k in _REMOTE_DEVICE_TOKEN_HEADERS if normalized.get(k)), "")
-        name, token = name.strip(), token.strip()
+        name = (row.get("Name") or "").strip()
+        token = (row.get("AuthToken") or "").strip()
         if name and token:
             devices[name] = token
     return devices

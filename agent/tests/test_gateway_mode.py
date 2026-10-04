@@ -11,26 +11,36 @@ import agent
 
 
 class TestParseRemoteDevicesCsv:
-    def test_parses_name_and_token_columns(self):
-        result = agent._parse_remote_devices_csv("name,token\npump3,TOK123\npump7,TOK789\n")
+    def test_parses_name_and_authtoken_columns(self):
+        result = agent._parse_remote_devices_csv("Name,AuthToken\npump3,TOK123\npump7,TOK789\n")
 
         assert result == {"pump3": "TOK123", "pump7": "TOK789"}
+
+    def test_console_default_headers_with_index_column(self):
+        # Direct regression test: confirmed on real hardware that the
+        # Blynk console's own Table metadata editor creates an "Index"
+        # column too - must be ignored, not mistaken for data.
+        result = agent._parse_remote_devices_csv(
+            "Index,Name,AuthToken\n0,AntsGatewayDevice1,63cH4PjtDdVhLlCOt_jEAdlSUUN_B8Ag\n"
+        )
+
+        assert result == {"AntsGatewayDevice1": "63cH4PjtDdVhLlCOt_jEAdlSUUN_B8Ag"}
 
     def test_empty_payload_returns_empty_dict(self):
         assert agent._parse_remote_devices_csv("") == {}
 
     def test_header_only_returns_empty_dict(self):
-        assert agent._parse_remote_devices_csv("name,token\n") == {}
+        assert agent._parse_remote_devices_csv("Name,AuthToken\n") == {}
 
     def test_row_missing_name_or_token_is_skipped(self):
         result = agent._parse_remote_devices_csv(
-            "name,token\npump3,TOK123\n,TOK789\npump9,\n"
+            "Name,AuthToken\npump3,TOK123\n,TOK789\npump9,\n"
         )
 
         assert result == {"pump3": "TOK123"}
 
     def test_whitespace_around_values_is_stripped(self):
-        result = agent._parse_remote_devices_csv("name,token\n pump3 , TOK123 \n")
+        result = agent._parse_remote_devices_csv("Name,AuthToken\n pump3 , TOK123 \n")
 
         assert result == {"pump3": "TOK123"}
 
@@ -38,22 +48,13 @@ class TestParseRemoteDevicesCsv:
         # Admin-edited console data, not something to crash the agent over.
         assert agent._parse_remote_devices_csv("not,even,close\nto,a,real,header") == {}
 
-    def test_console_default_headers_are_accepted(self):
-        # Direct regression test: confirmed on real hardware that the
-        # Blynk console's own Table metadata editor defaults to "Name" and
-        # "AuthToken" as column headers, not the lowercase "name"/"token"
-        # this was first written against - this found zero devices before
-        # the fix, despite a real row being present.
-        result = agent._parse_remote_devices_csv(
-            "Index,Name,AuthToken\n0,AntsGatewayDevice1,63cH4PjtDdVhLlCOt_jEAdlSUUN_B8Ag\n"
-        )
+    def test_wrong_column_names_find_nothing_rather_than_guessing(self):
+        # Deliberate: a table created with different column names doesn't
+        # parse, by design, rather than trying to guess at alternate
+        # spellings - see the function's own comment.
+        result = agent._parse_remote_devices_csv("name,token\npump3,TOK123\n")
 
-        assert result == {"AntsGatewayDevice1": "63cH4PjtDdVhLlCOt_jEAdlSUUN_B8Ag"}
-
-    def test_header_matching_is_case_insensitive(self):
-        result = agent._parse_remote_devices_csv("NAME,TOKEN\npump3,TOK123\n")
-
-        assert result == {"pump3": "TOK123"}
+        assert result == {}
 
 
 class TestRenderRemoteBridgeTopics:
@@ -215,7 +216,7 @@ class TestBlynkAgentGatewayMetadataFetch:
     def test_handle_remote_devices_meta_updates_bridge_and_reapplies(self, agent_instance):
         agent_instance.bridge.update_remote_devices.return_value = True
 
-        agent_instance._handle_remote_devices_meta("name,token\npump3,TOK123\n")
+        agent_instance._handle_remote_devices_meta("Name,AuthToken\npump3,TOK123\n")
 
         agent_instance.bridge.update_remote_devices.assert_called_once_with({"pump3": "TOK123"})
         agent_instance.bridge.ensure_current.assert_called_once_with(force_restart=True)
@@ -223,7 +224,7 @@ class TestBlynkAgentGatewayMetadataFetch:
     def test_handle_remote_devices_meta_skips_reapply_when_unchanged(self, agent_instance):
         agent_instance.bridge.update_remote_devices.return_value = False
 
-        agent_instance._handle_remote_devices_meta("name,token\npump3,TOK123\n")
+        agent_instance._handle_remote_devices_meta("Name,AuthToken\npump3,TOK123\n")
 
         agent_instance.bridge.ensure_current.assert_not_called()
 
