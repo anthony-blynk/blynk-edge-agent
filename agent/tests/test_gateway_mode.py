@@ -100,9 +100,13 @@ class TestRenderRemoteAclBlock:
 
 
 class TestMqttBridgeEnsureCurrentGatewayUsername:
-    """Regression coverage for the gateway username selection: mgmt_device
-    only when the capability is enabled AND REMOTE_DEVICES_FILE actually
-    lists at least one device - never from the capability flag alone."""
+    """Regression coverage for the separate gateway bridge connection: it's
+    only rendered (as its own "connection blynk-gateway" block, mgmt_device
+    auth) when the capability is enabled AND REMOTE_DEVICES_FILE actually
+    lists at least one device - never from the capability flag alone. Kept
+    as a second connection rather than folded into blynk-cloud's own topic
+    list - see GATEWAY_CONNECTION_TEMPLATE's own comment for the real-hardware
+    mosquitto duplicate-topic bug that requires this split."""
 
     @pytest.fixture
     def bridge(self, tmp_path, monkeypatch):
@@ -145,3 +149,21 @@ class TestMqttBridgeEnsureCurrentGatewayUsername:
         content = agent.BRIDGE_CONF_FILE.read_text()
         assert "remote_username mgmt_device" in content
         assert "remote/pump3/ dev/TOK123/" in content
+
+    def test_gateway_block_is_a_separate_connection_not_merged_into_primary(self, bridge, monkeypatch):
+        # Regression test for the real-hardware mosquitto bug: a bare
+        # ("topic ds/# out 1") entry and a prefixed one for the same
+        # topic/direction/qos on the SAME connection get silently
+        # deduplicated, skipping the prefixed entry entirely. Keeping two
+        # distinct "connection" blocks avoids that; this pins both blocks'
+        # presence and that the primary's own topics stay unprefixed.
+        monkeypatch.setattr(agent, "GATEWAY_CAPABILITY_ENABLED", True)
+        agent.REMOTE_DEVICES_FILE.write_text(json.dumps({"pump3": "TOK123"}))
+
+        bridge.ensure_current()
+
+        content = agent.BRIDGE_CONF_FILE.read_text()
+        assert content.count("connection blynk-cloud") == 1
+        assert content.count("connection blynk-gateway") == 1
+        assert "topic ds/# out 1\n" in content  # primary's own, unprefixed
+        assert "topic ds/# out 1 remote/pump3/ dev/TOK123/" in content

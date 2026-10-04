@@ -164,7 +164,7 @@ address {server}:8883
 # with "malformed packet" / "protocol error: RESERVED packet" within
 # seconds - confirmed against the real cloud broker. mqttv50 is stable.
 bridge_protocol_version mqttv50
-remote_username {remote_username}
+remote_username device
 remote_password {token}
 remote_clientid blynk-bridge-{template_id}
 bridge_cafile /etc/ssl/certs/ca-certificates.crt
@@ -192,8 +192,36 @@ topic info/mcu out 1
 topic event/# out 1
 topic get/# out 1
 topic meta/# out 1
+{gateway_connection_block}acl_file /mosquitto/config/conf.d/acl.rules
+"""
+
+# A second, separate bridge connection for gateway traffic - NOT merged into
+# blynk-cloud's own topic list above. Confirmed on real hardware that
+# mosquitto's bridge duplicate-topic check only compares local_prefix/
+# remote_prefix when BOTH sides are non-NULL; blynk-cloud's own bare topics
+# (e.g. "topic ds/# out 1", no prefix - NULL) silently "matched" a remote
+# device's prefixed entry for the same topic/direction/qos ("topic ds/# out
+# 1 remote/<name>/ dev/<token>/") and got skipped as a duplicate, meaning
+# gateway topics never actually registered despite a correctly-rendered
+# file. Keeping gateway topics on their own connection means every entry on
+# it always has both prefixes set, so that comparison works correctly - and
+# as a bonus, a bad mgmt_device auth now only takes down gateway traffic,
+# not blynk-cloud's own connection too. Only rendered when at least one
+# remote device is registered (see MqttBridge.ensure_current).
+GATEWAY_CONNECTION_TEMPLATE = """\
+connection blynk-gateway
+address {server}:8883
+bridge_protocol_version mqttv50
+remote_username mgmt_device
+remote_password {token}
+remote_clientid blynk-bridge-gateway-{template_id}
+bridge_cafile /etc/ssl/certs/ca-certificates.crt
+cleansession true
+try_private false
+local_username {local_username}
+local_password {local_password}
+
 {remote_device_topics}
-acl_file /mosquitto/config/conf.d/acl.rules
 """
 
 # Ordinary local apps keep exactly the same anonymous, no-credentials-needed
@@ -494,13 +522,21 @@ class MqttBridge:
         # restart (same convention as blynk.env), not a dedicated watch/poll
         # mechanism.
         remote_devices = _load_remote_devices() if GATEWAY_CAPABILITY_ENABLED else {}
-        remote_username = "mgmt_device" if remote_devices else "device"
+        gateway_connection_block = ""
+        if remote_devices:
+            gateway_connection_block = GATEWAY_CONNECTION_TEMPLATE.format(
+                server=server,
+                token=self.config.auth_token,
+                template_id=self.config.template_id,
+                remote_device_topics=_render_remote_bridge_topics(remote_devices),
+                local_username=creds["BRIDGE_LOCAL_USERNAME"],
+                local_password=creds["BRIDGE_LOCAL_PASSWORD"],
+            )
         rendered = BRIDGE_TEMPLATE.format(
             server=server,
             token=self.config.auth_token,
             template_id=self.config.template_id,
-            remote_username=remote_username,
-            remote_device_topics=_render_remote_bridge_topics(remote_devices),
+            gateway_connection_block=gateway_connection_block,
             local_username=creds["BRIDGE_LOCAL_USERNAME"],
             local_password=creds["BRIDGE_LOCAL_PASSWORD"],
         )
