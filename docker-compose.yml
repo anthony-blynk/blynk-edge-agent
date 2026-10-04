@@ -95,6 +95,30 @@ services:
   #   devices:
   #     - "/dev/video0:/dev/video0"
 
+  # See examples/usb-barcode-scanner/README.md - needs a USB barcode scanner
+  # in keyboard-wedge mode, AGENT_GATEWAY_ENABLED=true above, and a
+  # /opt/blynk/remote_devices.json entry for this scanner's own registered
+  # Blynk device (with a BarcodeScanned datastream created first). Fill in
+  # SCANNER_DEVICE_PATH (see `ls -l /dev/input/by-id/` on this host) and
+  # REMOTE_DEVICE_NAME (matching the remote_devices.json key) below.
+  # Versioned and published independently of this project's own stack
+  # version - see examples/usb-barcode-scanner/VERSION and
+  # .github/workflows/build-usb-barcode-scanner.yml.
+  # usb-barcode-scanner:
+  #   image: ghcr.io/anthony-blynk/usb-barcode-scanner:1.0.0
+  #   restart: unless-stopped
+  #   depends_on:
+  #     - mqtt-bridge
+  #   # Confirmed on real hardware: evdev's exclusive .grab() (EVIOCGRAB)
+  #   # gets EPERM under Docker's default capability set even running as
+  #   # root - a plain devices/volumes mapping alone isn't enough.
+  #   privileged: true
+  #   environment:
+  #     - SCANNER_DEVICE_PATH=/dev/input/by-id/usb-YOUR_SCANNER_MODEL-event-kbd
+  #     - REMOTE_DEVICE_NAME=your-scanner-name
+  #   volumes:
+  #     - /dev/input:/dev/input
+
 volumes:
   mqtt_bridge_data:
   mqtt_bridge_log:
