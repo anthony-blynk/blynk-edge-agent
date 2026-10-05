@@ -34,6 +34,16 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # :latest is expected to move; a specific version tag is supposed to
+      # mean "this exact content," so refuse to silently overwrite one.
+      - name: Refuse to overwrite an already-published version tag
+        run: |
+          tag="ghcr.io/${{ github.repository_owner }}/edge-ai-face-detector:${{ steps.version.outputs.version }}"
+          if docker manifest inspect "$tag" > /dev/null 2>&1; then
+            echo "::error::$tag already exists - bump examples/edge-ai-face-detector/VERSION before pushing to master."
+            exit 1
+          fi
+
       - name: Build and push edge-ai-face-detector
         uses: docker/build-push-action@v5
         with:

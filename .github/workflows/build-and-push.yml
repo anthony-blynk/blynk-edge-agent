@@ -38,6 +38,22 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # A push to master with no version bump would otherwise silently
+      # rebuild and overwrite whatever's already published under this exact
+      # tag - happened for real on this project (a couple of small fixes
+      # landed on master right after a release without bumping the
+      # version). :latest is expected to move; a specific version tag is
+      # supposed to mean "this exact content," so refuse to overwrite one.
+      - name: Refuse to overwrite an already-published version tag
+        run: |
+          for image in blynk-agent blynk-mqtt-bridge; do
+            tag="ghcr.io/${{ github.repository_owner }}/$image:${{ steps.version.outputs.version }}"
+            if docker manifest inspect "$tag" > /dev/null 2>&1; then
+              echo "::error::$tag already exists - bump x-stack.version (and both image tags) in docker-compose.yml before pushing to master."
+              exit 1
+            fi
+          done
+
       - name: Build and push agent
         uses: docker/build-push-action@v5
         with:
