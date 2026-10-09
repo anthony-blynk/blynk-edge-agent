@@ -1,0 +1,57 @@
+name: Build and push atc-thermometer example
+
+# Deliberately its own workflow, not folded into build-and-push.yml: this
+# example is versioned and released independently of the core agent/
+# mqtt-bridge stack (see examples/atc-thermometer/VERSION), so it should
+# only rebuild when its own files change, not on every edge-agent commit.
+on:
+  push:
+    branches: [master]
+    paths:
+      - "examples/atc-thermometer/**"
+      - ".github/workflows/build-atc-thermometer.yml"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read example version
+        id: version
+        run: echo "version=$(cat examples/atc-thermometer/VERSION)" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # :latest is expected to move; a specific version tag is supposed to
+      # mean "this exact content," so refuse to silently overwrite one.
+      - name: Refuse to overwrite an already-published version tag
+        run: |
+          tag="ghcr.io/${{ github.repository_owner }}/atc-thermometer:${{ steps.version.outputs.version }}"
+          if docker manifest inspect "$tag" > /dev/null 2>&1; then
+            echo "::error::$tag already exists - bump examples/atc-thermometer/VERSION before pushing to master."
+            exit 1
+          fi
+
+      - name: Build and push atc-thermometer
+        uses: docker/build-push-action@v5
+        with:
+          context: ./examples/atc-thermometer
+          platforms: linux/amd64,linux/arm64,linux/arm/v7
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/atc-thermometer:latest
+            ghcr.io/${{ github.repository_owner }}/atc-thermometer:${{ steps.version.outputs.version }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
