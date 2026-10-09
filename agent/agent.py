@@ -30,6 +30,7 @@ import yaml
 import requests
 
 import ble_provisioning
+import gateway
 
 logging.basicConfig(
     level=logging.INFO,
@@ -59,16 +60,6 @@ ACL_FILE = BRIDGE_CONF_DIR / "acl.rules"
 # working, and so the agent's own connection doesn't need reauthorizing
 # every time the container restarts.
 LOCAL_BROKER_CREDS_FILE = CONFIG_BASE / "mqtt-bridge" / "local_broker_creds.env"
-# Gateway mode's registry of remote/managed sub-devices (see
-# GATEWAY_CAPABILITY_ENABLED below) - admin/SSH-edited JSON, {"name": "token",
-# ...}, one entry per registered device. Started out as a Blynk-console-managed
-# Table metadata field instead, but real-hardware testing found Table fields
-# are defined at the template level (shared across every device using that
-# template) rather than per-device - unusable for a per-gateway registry. A
-# local file is a deliberate, simpler stand-in for now; a nicer Blynk-managed
-# mechanism can replace it later without changing anything downstream of
-# _load_remote_devices().
-REMOTE_DEVICES_FILE = CONFIG_BASE / "remote_devices.json"
 
 MQTT_HOST = os.getenv("MQTT_HOST", "mqtt-bridge")
 MQTT_PORT = int(os.getenv("MQTT_PORT", "1883"))
@@ -83,20 +74,6 @@ MQTT_PORT = int(os.getenv("MQTT_PORT", "1883"))
 # default from a normal install/update.
 TERMINAL_CAPABILITY_ENABLED = os.getenv("AGENT_TERMINAL_ENABLED", "false").lower() == "true"
 TERMINAL_COMMAND_TIMEOUT = 60  # seconds - long enough for things like `apt update`, not unbounded
-
-# Same capability-gate shape as Terminal above (docker-compose.yml/OTA-only,
-# never settable from Blynk itself) - see docs.blynk.io's MQTT Gateway API.
-# Requires a Blynk Enterprise org and the template's own "Enable for Gateway
-# API" console setting - separate, Blynk-side prerequisites this flag alone
-# can't satisfy. The actual registry of remote devices is REMOTE_DEVICES_FILE,
-# not anything Blynk-managed (see its own comment for why).
-GATEWAY_CAPABILITY_ENABLED = os.getenv("AGENT_GATEWAY_ENABLED", "false").lower() == "true"
-# Local topic namespace for a registered gateway sub-device - mirrors the
-# project's own ds/#, downlink/# etc. one level down, e.g.
-# remote/pump3-vibration/ds/Vibration. Never bridged directly; mosquitto's
-# bridge rewrites it to/from dev/{token}/... for the specific registered
-# device - see _render_remote_bridge_topics.
-REMOTE_TOPIC_PREFIX = "remote/"
 
 TOPIC_DOWNLINK = "downlink/#"
 TOPIC_OTA = "downlink/ota/json"
@@ -195,35 +172,6 @@ topic meta/# out 1
 {gateway_connection_block}acl_file /mosquitto/config/conf.d/acl.rules
 """
 
-# A second, separate bridge connection for gateway traffic - NOT merged into
-# blynk-cloud's own topic list above. Confirmed on real hardware that
-# mosquitto's bridge duplicate-topic check only compares local_prefix/
-# remote_prefix when BOTH sides are non-NULL; blynk-cloud's own bare topics
-# (e.g. "topic ds/# out 1", no prefix - NULL) silently "matched" a remote
-# device's prefixed entry for the same topic/direction/qos ("topic ds/# out
-# 1 remote/<name>/ dev/<token>/") and got skipped as a duplicate, meaning
-# gateway topics never actually registered despite a correctly-rendered
-# file. Keeping gateway topics on their own connection means every entry on
-# it always has both prefixes set, so that comparison works correctly - and
-# as a bonus, a bad mgmt_device auth now only takes down gateway traffic,
-# not blynk-cloud's own connection too. Only rendered when at least one
-# remote device is registered (see MqttBridge.ensure_current).
-GATEWAY_CONNECTION_TEMPLATE = """\
-connection blynk-gateway
-address {server}:8883
-bridge_protocol_version mqttv50
-remote_username mgmt_device
-remote_password {token}
-remote_clientid blynk-bridge-gateway-{template_id}
-bridge_cafile /etc/ssl/certs/ca-certificates.crt
-cleansession true
-try_private false
-local_username {local_username}
-local_password {local_password}
-
-{remote_device_topics}
-"""
-
 # Ordinary local apps keep exactly the same anonymous, no-credentials-needed
 # access they always had - this file exists solely to close the downlink/#
 # gap above, not to add authentication to the broker in general. Untagged
@@ -242,7 +190,7 @@ topic readwrite get/#
 topic readwrite meta/#
 topic readwrite local/blynk/upload/#
 topic readwrite local/blynk/upload_result
-{anonymous_remote_lines}
+{sub_device_anonymous_block}
 # The bridge's own local-side connection needs the same general access as
 # anonymous clients (it subscribes locally to ds/# etc. to forward them up
 # to Blynk Cloud) plus WRITE on downlink/# - how genuine cloud commands get
@@ -256,7 +204,7 @@ topic readwrite event/#
 topic readwrite get/#
 topic readwrite meta/#
 topic write downlink/#
-{bridge_remote_lines}
+{sub_device_bridge_line}
 # The agent's own connection needs the same general access as anonymous
 # clients (it publishes its own diagnostics/system-info datastreams) plus
 # READ on downlink/# - needed to actually process OTA/reboot/redirect/
@@ -277,76 +225,7 @@ topic readwrite meta/#
 topic read downlink/#
 topic read local/blynk/upload/#
 topic write local/blynk/upload_result
-"""
-
-
-def _load_remote_devices() -> dict:
-    """Reads REMOTE_DEVICES_FILE - {"name": "token", ...}, one entry per
-    gateway sub-device - admin/SSH-edited directly on the device, same as
-    blynk.env. Missing file or malformed JSON both just mean "no devices
-    registered yet" rather than a crash: this is hand-edited local state,
-    not something to be strict about. A plain dict (not a list of objects
-    or anything richer) is deliberate - see REMOTE_DEVICES_FILE's own
-    comment for why this exists instead of a Blynk-managed alternative."""
-    if not REMOTE_DEVICES_FILE.exists():
-        return {}
-    try:
-        data = json.loads(REMOTE_DEVICES_FILE.read_text())
-    except (OSError, json.JSONDecodeError) as e:
-        logger.warning(f"Could not read {REMOTE_DEVICES_FILE}: {e}")
-        return {}
-    if not isinstance(data, dict):
-        logger.warning(f"{REMOTE_DEVICES_FILE} must contain a JSON object of name:token pairs")
-        return {}
-    return {
-        str(name).strip(): str(token).strip()
-        for name, token in data.items()
-        if str(name).strip() and str(token).strip()
-    }
-
-
-def _render_remote_bridge_topics(remote_devices: dict) -> str:
-    """Per-device topic remap lines appended to BRIDGE_TEMPLATE - same topic
-    set as the primary identity's own block above, rewritten from local
-    remote/<name>/ to remote dev/<token>/ via mosquitto's local-prefix/
-    remote-prefix bridge syntax (see docs.blynk.io's MQTT Gateway API) so
-    each registered device appears in Blynk Cloud as its own, independent
-    device rather than sharing this one's identity."""
-    lines = []
-    for name, token in remote_devices.items():
-        local_prefix = f"{REMOTE_TOPIC_PREFIX}{name}/"
-        remote_prefix = f"dev/{token}/"
-        lines.append(f"topic downlink/# in 1 {local_prefix} {remote_prefix}")
-        lines.append(f"topic ds/# out 1 {local_prefix} {remote_prefix}")
-        lines.append(f"topic batch_ds out 1 {local_prefix} {remote_prefix}")
-        lines.append(f"topic info/mcu out 1 {local_prefix} {remote_prefix}")
-        lines.append(f"topic event/# out 1 {local_prefix} {remote_prefix}")
-        lines.append(f"topic get/# out 1 {local_prefix} {remote_prefix}")
-        lines.append(f"topic meta/# out 1 {local_prefix} {remote_prefix}")
-    return "\n".join(lines) + "\n" if lines else ""
-
-
-def _render_remote_acl_block(remote_devices: dict, downlink_permission: str) -> str:
-    """Per-device ACL lines for gateway mode - same general access as any
-    ordinary local app for that device's own remote/<name>/ namespace, with
-    the same asymmetric downlink/# split the primary identity already uses
-    (bridge writes genuine cloud commands in, nothing else can) - just
-    scoped per registered device instead of project-wide. downlink_permission
-    is "read" for the anonymous block (a local app representing this device
-    consumes commands meant for it, never forges them) or "write" for the
-    bridge's own block (it's the only thing that republishes a genuine
-    cloud-originated command locally)."""
-    lines = []
-    for name in remote_devices:
-        prefix = f"{REMOTE_TOPIC_PREFIX}{name}/"
-        lines.append(f"topic readwrite {prefix}ds/#")
-        lines.append(f"topic readwrite {prefix}batch_ds")
-        lines.append(f"topic readwrite {prefix}info/mcu")
-        lines.append(f"topic readwrite {prefix}event/#")
-        lines.append(f"topic readwrite {prefix}get/#")
-        lines.append(f"topic readwrite {prefix}meta/#")
-        lines.append(f"topic {downlink_permission} {prefix}downlink/#")
-    return "\n".join(lines) + "\n" if lines else ""
+{sub_device_agent_line}"""
 
 
 def _ensure_local_broker_credentials() -> dict:
@@ -381,18 +260,24 @@ def _ensure_local_broker_credentials() -> dict:
     return creds
 
 
-def _write_acl_file(creds: dict, remote_devices: Optional[dict] = None) -> bool:
+def _write_acl_file(creds: dict) -> bool:
     """Returns True if the file's content actually changed, so callers can
     tell mosquitto needs a restart to pick it up - mosquitto only reads
     acl_file at process start, it doesn't hot-reload it the way some of its
-    other config does."""
-    remote_devices = remote_devices or {}
+    other config does.
+
+    The sub-device ACL lines are static (see gateway.SUB_DEVICE_ACL_BLOCK's
+    own comment for why - unlike the bridge's actual topic remapping, which
+    does need one entry per registered device) - so unlike before, adding or
+    removing a specific sub-device no longer touches this file at all, only
+    the GATEWAY_CAPABILITY_ENABLED flag itself does."""
     ACL_FILE.parent.mkdir(parents=True, exist_ok=True)
     rendered = ACL_TEMPLATE.format(
         bridge_username=creds["BRIDGE_LOCAL_USERNAME"],
         agent_username=creds["AGENT_LOCAL_USERNAME"],
-        anonymous_remote_lines=_render_remote_acl_block(remote_devices, "read"),
-        bridge_remote_lines=_render_remote_acl_block(remote_devices, "write"),
+        sub_device_anonymous_block=gateway.SUB_DEVICE_ACL_BLOCK if gateway.GATEWAY_CAPABILITY_ENABLED else "",
+        sub_device_bridge_line=gateway.SUB_DEVICE_BRIDGE_ACL_LINE if gateway.GATEWAY_CAPABILITY_ENABLED else "",
+        sub_device_agent_line=gateway.SUB_DEVICE_AGENT_ACL_LINE if gateway.GATEWAY_CAPABILITY_ENABLED else "",
     )
     content_changed = not (ACL_FILE.exists() and ACL_FILE.read_text() == rendered)
     if content_changed:
@@ -509,38 +394,38 @@ class MqttBridge:
     mqtt-bridge container (by name, not via the docker-compose project -
     see _restart_mqtt_bridge) when it changes."""
 
-    def __init__(self, config: BlynkConfig, compose_path: Path = COMPOSE_FILE):
+    def __init__(self, config: BlynkConfig, compose_path: Path = COMPOSE_FILE,
+                 sub_device_registry: Optional['gateway.SubDeviceRegistry'] = None):
         self.config = config
         self.compose_path = compose_path
+        # Owned here (not just passed in) so MqttBridge always has one to
+        # render from even outside tests - BlynkAgent reaches the same
+        # instance via self.bridge.sub_device_registry to keep both sides
+        # of gateway mode (rendering vs. the MQTT handlers that update it)
+        # working from a single source of truth.
+        self.sub_device_registry = sub_device_registry or gateway.SubDeviceRegistry()
 
     def ensure_current(self, server_override: Optional[str] = None, force_restart: bool = False) -> None:
         server = server_override or self.config.effective_server()
         creds = _ensure_local_broker_credentials()
-        # Re-read on every call (startup, redirect, reconfigure, ...) rather
-        # than cached - picking up an edited REMOTE_DEVICES_FILE just needs
-        # whatever already triggers ensure_current, typically an agent
-        # restart (same convention as blynk.env), not a dedicated watch/poll
-        # mechanism.
-        remote_devices = _load_remote_devices() if GATEWAY_CAPABILITY_ENABLED else {}
+        sub_devices = self.sub_device_registry.devices if gateway.GATEWAY_CAPABILITY_ENABLED else {}
         # Logged unconditionally (same as "Loaded configuration for server:
         # ..." elsewhere) - an operator shouldn't need to force a config
         # change just to see current gateway state confirmed on every
         # restart, not only when something actually changes.
-        if remote_devices:
+        if sub_devices:
             logger.info(
-                f"Gateway mode active (mgmt_device) - {len(remote_devices)} remote device(s) "
-                f"registered: {', '.join(sorted(remote_devices))}"
+                f"Gateway mode active (mgmt_device) - {len(sub_devices)} sub-device(s) "
+                f"registered: {', '.join(sorted(sub_devices))}"
             )
-        gateway_connection_block = ""
-        if remote_devices:
-            gateway_connection_block = GATEWAY_CONNECTION_TEMPLATE.format(
-                server=server,
-                token=self.config.auth_token,
-                template_id=self.config.template_id,
-                remote_device_topics=_render_remote_bridge_topics(remote_devices),
-                local_username=creds["BRIDGE_LOCAL_USERNAME"],
-                local_password=creds["BRIDGE_LOCAL_PASSWORD"],
-            )
+        gateway_connection_block = gateway.build_gateway_connection_block(
+            sub_devices,
+            server=server,
+            token=self.config.auth_token,
+            template_id=self.config.template_id,
+            local_username=creds["BRIDGE_LOCAL_USERNAME"],
+            local_password=creds["BRIDGE_LOCAL_PASSWORD"],
+        )
         rendered = BRIDGE_TEMPLATE.format(
             server=server,
             token=self.config.auth_token,
@@ -557,7 +442,7 @@ class MqttBridge:
         # hardware: an ACL-only content change (bridge conf itself
         # unchanged) was silently ignored by an already-running mosquitto
         # until this was accounted for here.
-        acl_changed = _write_acl_file(creds, remote_devices)
+        acl_changed = _write_acl_file(creds)
         bridge_conf_unchanged = BRIDGE_CONF_FILE.exists() and BRIDGE_CONF_FILE.read_text() == rendered
         if bridge_conf_unchanged and not acl_changed and not force_restart:
             return
@@ -1213,6 +1098,13 @@ class BlynkAgent:
             client.subscribe(TOPIC_DOWNLINK, qos=1)
             client.subscribe(self._bridge_state_topic, qos=1)
             client.subscribe(TOPIC_LOCAL_UPLOAD_WILDCARD, qos=1)
+            if gateway.GATEWAY_CAPABILITY_ENABLED:
+                # Broad wildcard, not per-registered-name - needed so this
+                # device can notice an unconfigured sub-device's very first
+                # publish and auto-register it (see
+                # _handle_sub_device_traffic/gateway.SubDeviceRegistry.
+                # register_if_unknown).
+                client.subscribe(f"{gateway.SUB_DEVICE_TOPIC_PREFIX}+/#", qos=1)
             # Right after (re)subscribing is exactly when a presumed-
             # disconnected state is most likely to be a false positive (see
             # _bridge_disconnected_since's own comment) - mosquitto's bridge
@@ -1233,6 +1125,8 @@ class BlynkAgent:
             client.publish("get/ds", "AgentDiagnosticsEnabled", qos=1)
             if TERMINAL_CAPABILITY_ENABLED:
                 client.publish("get/ds", "AgentTerminalEnabled", qos=1)
+            if gateway.GATEWAY_CAPABILITY_ENABLED:
+                client.publish("get/ds", gateway.REGISTRY_DATASTREAM, qos=1)
         else:
             self._connected = False
             logger.error(f"Failed to connect to local broker: {reason_code}")
@@ -1289,6 +1183,10 @@ class BlynkAgent:
                     "[terminal disabled: set AGENT_TERMINAL_ENABLED=true in docker-compose.yml]",
                     qos=1,
                 )
+        elif message.topic == gateway.TOPIC_SUB_DEVICE_REGISTRY and gateway.GATEWAY_CAPABILITY_ENABLED:
+            self._handle_sub_device_registry(payload)
+        elif gateway.GATEWAY_CAPABILITY_ENABLED and message.topic.startswith(gateway.SUB_DEVICE_TOPIC_PREFIX):
+            self._handle_sub_device_traffic(message.topic)
         else:
             logger.debug(f"Unhandled message on {message.topic}: {payload}")
 
@@ -1583,6 +1481,28 @@ class BlynkAgent:
     def _handle_diagnostics_enabled(self, payload: str) -> None:
         self.diagnostics_enabled = payload.strip() == "1"
         logger.info(f"Diagnostics reporting {'enabled' if self.diagnostics_enabled else 'disabled'}")
+
+    def _handle_sub_device_registry(self, payload: str) -> None:
+        """Response to get/ds AgentSubDeviceRegistry at connect, or a live
+        console-originated edit arriving the same way AgentTerminalEnabled's
+        toggle does - either way, re-renders the bridge config immediately
+        if the registry actually changed, no restart required to pick up a
+        registry edit the way the old local-file version needed."""
+        if self.bridge.sub_device_registry.load_from_payload(payload):
+            self.bridge.ensure_current(force_restart=True)
+
+    def _handle_sub_device_traffic(self, topic: str) -> None:
+        """Auto-discovery: any local traffic under gateway.SUB_DEVICE_TOPIC_PREFIX
+        for a name not yet in the registry gets added with a placeholder
+        token, so it shows up as "needs configuring" wherever the registry
+        is viewed (e.g. a web dashboard tab) - see
+        gateway.SubDeviceRegistry.register_if_unknown. Already-registered
+        names (the overwhelming majority of traffic, once set up) are a
+        cheap no-op here."""
+        name = gateway.extract_sub_device_name(topic)
+        if name and self.bridge.sub_device_registry.register_if_unknown(name):
+            self.client.publish("ds/" + gateway.REGISTRY_DATASTREAM, self.bridge.sub_device_registry.to_json(), qos=1)
+            self.bridge.ensure_current(force_restart=True)
 
     def _publish_diagnostics(self) -> None:
         metrics = {

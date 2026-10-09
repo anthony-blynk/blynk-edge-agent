@@ -264,9 +264,9 @@ fi
 
 # Off by default (see docker-compose.yml's own comment next to it) - needs
 # real, non-trivial Blynk-side setup first (an Enterprise org, the
-# template's own "Enable for Gateway API" toggle) plus a hand-edited
-# /opt/blynk/remote_devices.json registry, before it does anything at all,
-# so this is opt-in rather than discover-by-trying like Terminal above.
+# template's own "Enable for Gateway API" toggle, an AgentSubDeviceRegistry
+# datastream), before it does anything at all, so this is opt-in rather
+# than discover-by-trying like Terminal above.
 read -r -p "Will this device act as an MQTT Gateway for other Blynk devices? Requires Blynk Enterprise. [y/N] " ENABLE_GATEWAY </dev/tty
 if [ "$ENABLE_GATEWAY" = "Y" ] || [ "$ENABLE_GATEWAY" = "y" ]; then
   sed -i "s/AGENT_GATEWAY_ENABLED=false/AGENT_GATEWAY_ENABLED=true/" "$STATE_DIR/docker-compose.yml"

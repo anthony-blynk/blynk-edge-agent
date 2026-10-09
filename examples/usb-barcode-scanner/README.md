@@ -2,7 +2,7 @@
 
 Reads a USB barcode scanner running in "keyboard wedge" mode and publishes
 each scan as its own, independent Blynk device - using the edge-agent's
-[MQTT Gateway](../../README.md#mqtt-gateway-remote-devices) feature, not this
+[MQTT Gateway](../../README.md#mqtt-gateway-sub-devices) feature, not this
 device's own identity. Reads the scanner directly via Linux's `evdev` (not
 by capturing keystrokes typed into a focused window), so scans never leak
 into a terminal or any other app running on the host.
@@ -20,7 +20,7 @@ no reliable way to tell two identical scanners apart. Running two different
 
 This relies entirely on the edge-agent's Gateway feature already being set
 up and working on this device - if you haven't done that yet, start with
-the main README's [MQTT Gateway](../../README.md#mqtt-gateway-remote-devices)
+the main README's [MQTT Gateway](../../README.md#mqtt-gateway-sub-devices)
 section first. Specifically, you need:
 
 1. **A Blynk Enterprise org**, with "Enable for Gateway API" turned on for
@@ -29,8 +29,12 @@ section first. Specifically, you need:
    device-creation API), under that template, with a `BarcodeScanned`
    datastream (String type) - bind it to a Label/Terminal widget if you want
    to see scans live on a dashboard.
-3. **A registry entry** for it in this device's `/opt/blynk/remote_devices.json`
-   - e.g. `{"warehouse-scanner-1": "<that device's own real auth token>"}`.
+3. **A registry entry** for it in this device's `AgentSubDeviceRegistry`
+   datastream - e.g. `{"warehouse-scanner-1": "<that device's own real auth
+   token>"}` - or just skip this step and plug the scanner in: it'll
+   auto-register itself with a placeholder token the first time it scans
+   anything, and you just need to replace the placeholder with its real
+   token afterward.
 4. **`AGENT_GATEWAY_ENABLED=true`** on this device (see the main README).
 
 ## Finding your scanner's device path
@@ -48,7 +52,7 @@ which can renumber).
 Published as a prebuilt image (`ghcr.io/anthony-blynk/usb-barcode-scanner`) -
 nothing to build yourself. Uncomment the `usb-barcode-scanner` service in the
 root [`docker-compose.yml`](../../docker-compose.yml), fill in
-`SCANNER_DEVICE_PATH` and `REMOTE_DEVICE_NAME` for your actual scanner/registry
+`SCANNER_DEVICE_PATH` and `SUB_DEVICE_NAME` for your actual scanner/registry
 entry, then `docker compose up -d`.
 
 **Don't push this uncommented via a fleet-wide OTA update** - same reasoning

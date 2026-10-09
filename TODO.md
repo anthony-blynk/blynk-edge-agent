@@ -53,3 +53,29 @@ The one thing that actually fixed it: `docker compose down && docker compose up 
 
 If this happens again: try reproducing it directly (loop `docker restart` on a fresh container many times and watch for the same SIGKILL pattern to emerge) before assuming it's the same "stale object" cause. If confirmed as a recurring failure mode, worth having the agent detect a fast crash-loop (e.g. N failed reconnects to the local broker within a short window) and escalate to a full recreate itself, rather than only ever doing a plain `docker restart` the way `_restart_mqtt_bridge` does today.
 
+## Security: explicit threat model documentation (P1)
+
+Raised by external code review: the project's real host-access surface (privileged mode, Docker socket, D-Bus/NetworkManager/ModemManager, Terminal) is explained piecemeal in scattered comments but never stated plainly in one place. Write an explicit "agent compromise = host compromise" threat model doc - what access the agent has, why each piece is needed, and what that means for anyone deploying it. Cheap (pure documentation, no engineering risk) and directly closes a transparency gap multiple independent reviews flagged.
+
+## Terminal: secure-by-default compose split (P1)
+
+Current `docker-compose.yml` ships with `AGENT_TERMINAL_ENABLED=true` by default, with a README warning to turn it off for production. External review pushback: a secure-by-default posture is safer, since plenty of real deployments never read the fine print and just ship whatever the installer defaulted to. Proposed resolution, not a strict either/or: keep the current file as a "demo/quickstart" variant, but make a normal/production-oriented compose file default Terminal off - preserves "easy to try" without it being what most people unknowingly ship.
+
+## Real-hardware release gate (P1/P2, staged)
+
+External review's central point: there's a decent real-device test suite now, but it isn't authoritative for releases - nothing currently stops a release from going out without actually running on real hardware first. End state: a pinned device auto-deploys each release candidate and runs the device-test suite, failing the release on any failure - mirrors what this project's own bug history already shows is needed (mosquitto's duplicate-topic dedup bug, BLE/EATT instability, the modem routing theft, `evdev` needing `privileged: true`, Table metadata turning out to be template-shared - every one of these surfaced through live manual hardware debugging, not CI).
+
+Worth staging rather than building the full automated version directly: a single pinned device is also a single point of failure for the whole release process (SD card wear, WiFi flakiness - this project's own host has shown exactly that this session), and a self-hosted CI runner attached to real hardware carries its own operational/security considerations. Start with a documented manual pre-release checklist, then script it, then wire into CI once proven stable.
+
+## Expand real-device test coverage (P2)
+
+Beyond the release-gate mechanism itself, the actual scenarios exercised need to grow: cloud-to-device roundtrip, OTA rollback (both the existing apply-failure path and the crash-loop case above), diagnostics reporting, Terminal (when deliberately enabled for a test run), and BLE provisioning on a dedicated test rig. Also round out unit test coverage in areas less exercised today: OTA, configuration loading, payload parsing.
+
+## Split agent.py into modules (P3)
+
+`agent.py` has grown to cover BLE provisioning entry points, OTA/compose management, the MQTT bridge, Terminal, and diagnostics all in one file. Already reasonably well-commented, but worth continuing to split out as functionality keeps stacking - raised independently by multiple external reviews. Gateway mode (sub-devices) has already been pulled out into its own `gateway.py` module as a first instance of this.
+
+## README typos (P3)
+
+A few small typos flagged by external review ("abd OS's", "Raspbery", "authetication") - quick fix whenever.
+

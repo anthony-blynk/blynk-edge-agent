@@ -1,8 +1,8 @@
 """
 USB barcode scanner bridge - reads a keyboard-wedge barcode scanner directly
 via evdev (bypassing whatever has keyboard focus) and publishes each scan to
-this registered device's own namespace via the edge-agent's MQTT Gateway
-feature (see ../../README.md#mqtt-gateway-remote-devices) - no Blynk
+this registered sub-device's own namespace via the edge-agent's MQTT Gateway
+feature (see ../../README.md#mqtt-gateway-sub-devices) - no Blynk
 credentials needed here at all, same as every other local app in this
 project; only mqtt-bridge/the agent ever hold a real token.
 
@@ -31,8 +31,10 @@ MQTT_PORT = int(os.getenv("MQTT_PORT", "1883"))
 # `ls -l /dev/input/by-id/` on the host (see README).
 SCANNER_DEVICE_PATH = os.getenv("SCANNER_DEVICE_PATH")
 # Must match this scanner's own entry (key) in the gateway's
-# /opt/blynk/remote_devices.json on this device - see README.
-REMOTE_DEVICE_NAME = os.getenv("REMOTE_DEVICE_NAME")
+# AgentSubDeviceRegistry datastream on this device - or, if it's not there
+# yet, this is the name it'll auto-register itself under (with a
+# placeholder token pending configuration) - see README.
+SUB_DEVICE_NAME = os.getenv("SUB_DEVICE_NAME")
 DATASTREAM_NAME = os.getenv("DATASTREAM_NAME", "BarcodeScanned")
 
 DEVICE_RETRY_SECONDS = 5
@@ -64,10 +66,10 @@ def _open_scanner() -> evdev.InputDevice:
 def main() -> None:
     if not SCANNER_DEVICE_PATH:
         raise SystemExit("SCANNER_DEVICE_PATH is required - see README")
-    if not REMOTE_DEVICE_NAME:
-        raise SystemExit("REMOTE_DEVICE_NAME is required - see README")
+    if not SUB_DEVICE_NAME:
+        raise SystemExit("SUB_DEVICE_NAME is required - see README")
 
-    topic = f"remote/{REMOTE_DEVICE_NAME}/ds/{DATASTREAM_NAME}"
+    topic = f"sub/{SUB_DEVICE_NAME}/ds/{DATASTREAM_NAME}"
     logger.info(f"Publishing scans to {topic} via {MQTT_HOST}:{MQTT_PORT}")
 
     client = mqtt.Client(callback_api_version=mqtt.CallbackAPIVersion.VERSION2)
