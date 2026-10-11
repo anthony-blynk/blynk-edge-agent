@@ -135,6 +135,27 @@ Gateway traffic runs over its own separate bridge connection (`mgmt_device`, a s
 
 Each registered sub-device gets its own local topic namespace - publish/subscribe exactly like you would for this device's own `ds/`/`downlink/` topics, just under `sub/<name>/` instead (e.g. `sub/pump3-vibration/ds/Vibration`). Anonymous local access works the same way it does everywhere else in this project - no credentials needed to publish a sub-device's data, though its own `downlink/#` stays read-only to anonymous clients, write-only to the bridge, mirroring the project's existing `downlink/#` protection.
 
+### Multiple sensors on one Blynk device (roles)
+
+A registry value can also be `"<token>|<role>"` instead of a bare token - several local sub-device names can then share **one** Blynk device/token, each owning its own datastream-name prefix (`<role>_`). Useful when one physical asset has several local sensors that should show up as a single thing in Blynk (e.g. a motor's vibration sensor and its bearing's temperature sensor, both on the same `pump3` Blynk device) rather than each needing its own separate Template+Device+token:
+
+```json
+{
+  "pump3-motor": "TOKEN123|motor",
+  "pump3-bearing": "TOKEN123|bearing"
+}
+```
+
+A local publish to `sub/pump3-motor/ds/Vibration` arrives in Blynk as `dev/TOKEN123/ds/motor_Vibration`; `sub/pump3-bearing/ds/Temperature` arrives as `dev/TOKEN123/ds/bearing_Temperature`. `batch_ds` works the same way - every key in the JSON object gets the role prefix added. Roles are restricted to `[A-Za-z0-9_]+`; an invalid role, or a conflicting setup on a shared token (one entry has no role, or two share the same role), gets logged and skipped rather than routed ambiguously - the rest of the registry still loads normally.
+
+Downlink works in reverse: `downlink/ds/motor_Speed` reaches only the sub-device with the `motor` role, prefix stripped before delivery (it sees plain `downlink/ds/Speed`); an unprefixed `downlink/ds/<name>`, or any non-`ds` downlink (e.g. a redirect), is asset-level and reaches every sub-device sharing that token, unchanged.
+
+**Not forwarded** for a roled sub-device: `info/mcu`, `meta/#`, `get/#` - several sensors sharing one Blynk device would overwrite each other's info/metadata if these went through, and `get/*` gets no replies over the gateway connection anyway. A roled sub-device that publishes to any of these gets logged once, then silently dropped.
+
+**Depends on the agent process being up**, unlike unroled sub-devices (bridged directly by mosquitto, independent of the agent container). Roled traffic is rewritten and routed by the agent itself - mosquitto's bridge can only rewrite topic-string prefixes, not a datastream name's own content or a `batch_ds` JSON body - so if the agent container is down, roled sub-devices' traffic doesn't flow even while mosquitto's bridge connection itself might still be up.
+
+**Capacity note:** a shared token still counts once per *entry* against the registry's 1024-character cap - `{"pump3-motor": "TOKEN123|motor", "pump3-bearing": "TOKEN123|bearing"}` is two entries, not one. Sharing a token across several roles doesn't save registry space over giving each sub-device its own token.
+
 Verified end-to-end against a real Enterprise/QA Blynk server: a registered sub-device's own datastream value updates in the Blynk console after a plain local publish to `sub/<name>/ds/<Datastream>` - see [examples/usb-barcode-scanner/](examples/usb-barcode-scanner/) for a full real-hardware example built on this.
 
 ## Security

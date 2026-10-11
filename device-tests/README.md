@@ -46,6 +46,24 @@ In each device's Blynk template, create a datastream named `AgentSelfTest` (any 
 
 (The obvious alternative - looking the pin up by name automatically - needs Blynk's Platform API `GET /api/v1/organization/template/datastreams`, which requires an account-level Bearer/JWT login, not the device's own token. Putting that on a device would be a real security downgrade versus this project's "devices only ever hold their own per-device token" design, just to avoid a fixed pin convention.)
 
+## Manual check: roled sub-devices sharing one Blynk device
+
+Not automated here - it needs real Enterprise-tier Gateway API setup (a second Template+Device with its own token, "Enable for Gateway API" turned on, `AGENT_GATEWAY_ENABLED=true`) well beyond this suite's existing `AgentSelfTest`/`V100` convention, and the HTTP Device API has no by-name lookup for the sub-devices' own dynamically-named (`<role>_<name>`) datastreams the way it does for this project's fixed test pin (see `test_cloud_roundtrip.py`'s own setup note above). Verify by hand instead:
+
+1. On the shared-asset Template (the one the sub-devices' real token belongs to), create two datastreams: `motor_Speed` and `bearing_Speed` (any numeric type, any pin).
+2. With `AGENT_GATEWAY_ENABLED=true`, publish `AgentSubDeviceRegistry` as:
+   ```json
+   {"pump3-motor": "<real-token>|motor", "pump3-bearing": "<real-token>|bearing"}
+   ```
+3. Publish two local uplinks and confirm both land with the right prefix in the Blynk console - not swapped, and not both landing on the same datastream:
+   ```
+   mosquitto_pub -h 127.0.0.1 -t sub/pump3-motor/ds/Speed -m 42
+   mosquitto_pub -h 127.0.0.1 -t sub/pump3-bearing/ds/Speed -m 7
+   ```
+   Expect `motor_Speed` = `42` and `bearing_Speed` = `7`.
+4. Subscribe locally to both `sub/pump3-motor/downlink/#` and `sub/pump3-bearing/downlink/#`, then push a value to `motor_Speed` from the console (or the Device HTTP API's `update` endpoint). Confirm it's delivered only to `sub/pump3-motor/downlink/ds/Speed` - nothing arrives on `pump3-bearing`'s side for this one update.
+5. Push a value to an unprefixed/asset-level datastream (no role prefix) on the same device and confirm it fans out to *both* `sub/pump3-motor/downlink/ds/<name>` and `sub/pump3-bearing/downlink/ds/<name>`.
+
 ## Not yet covered
 
 - The cloud round-trip test only covers a **local publish reaching the cloud** - not the reverse direction (an API-driven datastream update reaching the device), which would exercise a real downlink path the same way toggling a console Switch widget does.

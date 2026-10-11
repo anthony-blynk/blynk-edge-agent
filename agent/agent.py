@@ -204,7 +204,7 @@ topic readwrite event/#
 topic readwrite get/#
 topic readwrite meta/#
 topic write downlink/#
-{sub_device_bridge_line}
+{sub_device_bridge_line}{gw_bridge_lines}
 # The agent's own connection needs the same general access as anonymous
 # clients (it publishes its own diagnostics/system-info datastreams) plus
 # READ on downlink/# - needed to actually process OTA/reboot/redirect/
@@ -225,7 +225,7 @@ topic readwrite meta/#
 topic read downlink/#
 topic read local/blynk/upload/#
 topic write local/blynk/upload_result
-{sub_device_agent_line}"""
+{sub_device_agent_line}{gw_agent_lines}"""
 
 
 def _ensure_local_broker_credentials() -> dict:
@@ -278,6 +278,8 @@ def _write_acl_file(creds: dict) -> bool:
         sub_device_anonymous_block=gateway.SUB_DEVICE_ACL_BLOCK if gateway.GATEWAY_CAPABILITY_ENABLED else "",
         sub_device_bridge_line=gateway.SUB_DEVICE_BRIDGE_ACL_LINE if gateway.GATEWAY_CAPABILITY_ENABLED else "",
         sub_device_agent_line=gateway.SUB_DEVICE_AGENT_ACL_LINE if gateway.GATEWAY_CAPABILITY_ENABLED else "",
+        gw_bridge_lines=gateway.GW_BRIDGE_ACL_LINES if gateway.GATEWAY_CAPABILITY_ENABLED else "",
+        gw_agent_lines=gateway.GW_AGENT_ACL_LINES if gateway.GATEWAY_CAPABILITY_ENABLED else "",
     )
     content_changed = not (ACL_FILE.exists() and ACL_FILE.read_text() == rendered)
     if content_changed:
@@ -1074,6 +1076,11 @@ class BlynkAgent:
         self._bridge_disconnected_since: Optional[float] = time.time()
         self._bridge_dns_refresh_attempted = False
         self._reprovisioning = False
+        # Names already warned about publishing a non-forwarded topic
+        # (info/mcu, meta/#, get/#) while roled - see
+        # _rewrite_and_republish_uplink - so a noisy sub-device doesn't
+        # spam the log forever, just once per name.
+        self._roled_dropped_topics_logged: set = set()
         self.terminal_session_enabled = False  # the fast on/off switch, on top of TERMINAL_CAPABILITY_ENABLED
         self._terminal_lock = threading.Lock()  # one command's output at a time - see _run_terminal_command
         self._setup_mqtt_client()
@@ -1105,6 +1112,16 @@ class BlynkAgent:
                 # _handle_sub_device_traffic/gateway.SubDeviceRegistry.
                 # register_if_unknown).
                 client.subscribe(f"{gateway.SUB_DEVICE_TOPIC_PREFIX}+/#", qos=1)
+                # Roled sub-devices' uplinks get rewritten and republished
+                # onto gw/<token>/... by this agent (see
+                # _handle_sub_device_traffic); this is the other half -
+                # the bridge republishes a matching cloud downlink back
+                # onto this same namespace, for _handle_gw_downlink to
+                # fan out to whichever local sub-device(s) it belongs to.
+                # Scoped to exactly downlink/# under gw/+/, not gw/+/#,
+                # so the agent can never receive back its own uplink
+                # publishes (ds/batch_ds/event) - no loop risk.
+                client.subscribe(f"{gateway.GW_TOPIC_PREFIX}+/downlink/#", qos=1)
             # Right after (re)subscribing is exactly when a presumed-
             # disconnected state is most likely to be a false positive (see
             # _bridge_disconnected_since's own comment) - mosquitto's bridge
@@ -1186,7 +1203,9 @@ class BlynkAgent:
         elif message.topic == gateway.TOPIC_SUB_DEVICE_REGISTRY and gateway.GATEWAY_CAPABILITY_ENABLED:
             self._handle_sub_device_registry(payload)
         elif gateway.GATEWAY_CAPABILITY_ENABLED and message.topic.startswith(gateway.SUB_DEVICE_TOPIC_PREFIX):
-            self._handle_sub_device_traffic(message.topic)
+            self._handle_sub_device_traffic(message.topic, payload)
+        elif gateway.GATEWAY_CAPABILITY_ENABLED and message.topic.startswith(gateway.GW_TOPIC_PREFIX):
+            self._handle_gw_downlink(message.topic, payload)
         else:
             logger.debug(f"Unhandled message on {message.topic}: {payload}")
 
@@ -1491,18 +1510,108 @@ class BlynkAgent:
         if self.bridge.sub_device_registry.load_from_payload(payload):
             self.bridge.ensure_current(force_restart=True)
 
-    def _handle_sub_device_traffic(self, topic: str) -> None:
-        """Auto-discovery: any local traffic under gateway.SUB_DEVICE_TOPIC_PREFIX
-        for a name not yet in the registry gets added with a placeholder
-        token, so it shows up as "needs configuring" wherever the registry
-        is viewed (e.g. a web dashboard tab) - see
-        gateway.SubDeviceRegistry.register_if_unknown. Already-registered
-        names (the overwhelming majority of traffic, once set up) are a
-        cheap no-op here."""
+    def _handle_sub_device_traffic(self, topic: str, payload: str) -> None:
+        """Auto-discovery (unchanged): any local traffic under
+        gateway.SUB_DEVICE_TOPIC_PREFIX for a name not yet in the registry
+        gets added with a placeholder token, so it shows up as "needs
+        configuring" wherever the registry is viewed (e.g. a web dashboard
+        tab) - see gateway.SubDeviceRegistry.register_if_unknown. Fires
+        regardless of payload content; already-registered names (the
+        overwhelming majority of traffic, once set up) are a cheap no-op
+        here.
+
+        Additionally, for an already-known ROLED name: rewrites and
+        republishes the message onto gw/<token>/... - mosquitto's bridge
+        can only rewrite topic-string prefixes, not insert a role prefix
+        into a datastream name or edit batch_ds's JSON body, so the agent
+        has to sit in the data path for roled traffic (see gateway.py's
+        module docstring). Unroled traffic never reaches the rewrite step;
+        mosquitto bridges it directly, same as before roles existed."""
         name = gateway.extract_sub_device_name(topic)
-        if name and self.bridge.sub_device_registry.register_if_unknown(name):
+        if not name:
+            return
+        rest = gateway.extract_sub_device_rest(topic)
+        if rest is not None and (rest == "downlink" or rest.startswith("downlink/")):
+            # This agent's own sub/+/# auto-discovery subscription also
+            # catches its own downlink fan-out republishes back onto
+            # sub/<name>/downlink/... (see _handle_gw_downlink) - expected,
+            # not an auto-discovery event or an uplink to rewrite.
+            return
+
+        if self.bridge.sub_device_registry.register_if_unknown(name):
             self.client.publish("ds/" + gateway.REGISTRY_DATASTREAM, self.bridge.sub_device_registry.to_json(), qos=1)
             self.bridge.ensure_current(force_restart=True)
+            return
+
+        routing = gateway.build_roled_routing(self.bridge.sub_device_registry.devices)
+        route = routing.by_name.get(name)
+        if route is None:
+            return
+        token, role = route
+        self._rewrite_and_republish_uplink(name, token, role, rest, payload)
+
+    def _rewrite_and_republish_uplink(self, name: str, token: str, role: str, rest: str, payload: str) -> None:
+        """rest is the sub-device-local topic tail (e.g. "ds/Vibration",
+        "batch_ds", "event/foo") - see _handle_sub_device_traffic. Republishes
+        at qos=1 with no retain (the one topic here that would otherwise
+        want retain, info/mcu, is deliberately not forwarded for roled
+        entries at all - see gw_prefix's topic set)."""
+        gw_prefix = f"{gateway.GW_TOPIC_PREFIX}{token}/"
+
+        if rest.startswith("ds/"):
+            ds_name = rest[len("ds/"):]
+            self.client.publish(f"{gw_prefix}ds/{role}_{ds_name}", payload, qos=1)
+        elif rest == "batch_ds":
+            try:
+                values = json.loads(payload)
+            except json.JSONDecodeError as e:
+                logger.warning(f"Sub-device '{name}' sent malformed batch_ds JSON, dropped: {e}")
+                return
+            if not isinstance(values, dict):
+                logger.warning(f"Sub-device '{name}' batch_ds must be a JSON object, dropped")
+                return
+            prefixed = {f"{role}_{key}": value for key, value in values.items()}
+            self.client.publish(f"{gw_prefix}batch_ds", json.dumps(prefixed), qos=1)
+        elif rest == "event" or rest.startswith("event/"):
+            self.client.publish(f"{gw_prefix}{rest}", payload, qos=1)
+        elif rest == "info/mcu" or rest == "meta" or rest.startswith("meta/") or rest == "get" or rest.startswith("get/"):
+            if name not in self._roled_dropped_topics_logged:
+                self._roled_dropped_topics_logged.add(name)
+                logger.warning(
+                    f"Roled sub-device '{name}' published to '{rest}', which isn't forwarded for "
+                    f"sensors sharing one Blynk device (would overwrite siblings' info/metadata) - dropped"
+                )
+        else:
+            logger.debug(f"Roled sub-device '{name}' published to unrecognized topic suffix '{rest}', dropped")
+
+    def _handle_gw_downlink(self, topic: str, payload: str) -> None:
+        """Fan-out for a cloud-originated downlink the bridge republished
+        onto gw/<token>/downlink/... (see gateway.GW_BRIDGE_ACL_LINES). A
+        prefixed ds downlink (downlink/ds/<role>_<X>) goes only to the one
+        local sub-device owning that role - longest-role-prefix match, so
+        "bearing_de" beats "bearing" if both exist on this token. Anything
+        else - an unprefixed/asset-level ds downlink, or a non-ds downlink
+        entirely - goes to every sub-device sharing that token."""
+        parsed = gateway.extract_gw_token_and_rest(topic)
+        if parsed is None:
+            return
+        token, rest = parsed
+        routing = gateway.build_roled_routing(self.bridge.sub_device_registry.devices)
+        names = routing.names_for_token(token)
+        if not names:
+            return
+
+        ds_prefix = "downlink/ds/"
+        if rest.startswith(ds_prefix):
+            match = routing.resolve_ds_downlink(token, rest[len(ds_prefix):])
+            if match is not None:
+                name, stripped_ds_name = match
+                self.client.publish(f"{gateway.SUB_DEVICE_TOPIC_PREFIX}{name}/{ds_prefix}{stripped_ds_name}",
+                                     payload, qos=1)
+                return
+
+        for name in names:
+            self.client.publish(f"{gateway.SUB_DEVICE_TOPIC_PREFIX}{name}/{rest}", payload, qos=1)
 
     def _publish_diagnostics(self) -> None:
         metrics = {
