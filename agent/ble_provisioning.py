@@ -44,6 +44,7 @@ import logging
 import socket
 import struct
 import zlib
+from typing import Optional
 
 from bluez_peripheral.gatt.service import Service
 from bluez_peripheral.gatt.characteristic import characteristic, CharacteristicFlags as CharFlags
@@ -119,7 +120,14 @@ async def _forget_bonded_devices(bus, path: str = ADAPTER_PATH) -> None:
     own previous bond up front forces a full fresh pairing and GATT
     rediscovery every time a provisioning session starts, which sidesteps
     the whole stale-cache failure category rather than needing to reverse
-    engineer BlueZ's exact caching/hash-invalidation behavior."""
+    engineer BlueZ's exact caching/hash-invalidation behavior.
+
+    Only forgets devices BlueZ identifies as a phone (Icon == "phone"), not
+    every bonded device - this runs on a dedicated gateway, not a general-
+    purpose machine, but some gateways do have other paired Bluetooth
+    peripherals of their own (a barcode scanner, headphones on a kiosk
+    device) that have nothing to do with the stale-GATT-cache problem above
+    and shouldn't get unpaired just for pairing happening to run."""
     try:
         root_introspection = await bus.introspect("org.bluez", "/")
         root_proxy = bus.get_proxy_object("org.bluez", "/", root_introspection)
@@ -140,9 +148,14 @@ async def _forget_bonded_devices(bus, path: str = ADAPTER_PATH) -> None:
         paired = device_props.get("Paired")
         if not (paired and paired.value):
             continue
+        icon = device_props["Icon"].value if "Icon" in device_props else None
+        alias = device_props["Alias"].value if "Alias" in device_props else device_path
+        if icon != "phone":
+            logger.info(f"Leaving bonded device '{alias}' ({icon or 'unknown type'}) alone")
+            continue
         try:
             await adapter_iface.call_remove_device(device_path)
-            logger.info(f"Forgot previously bonded device {device_path} before starting BLE provisioning")
+            logger.info(f"Forgot previously bonded phone '{alias}' before starting BLE provisioning")
         except Exception as e:
             logger.warning(f"Could not remove bonded device {device_path}: {e}")
 
@@ -167,6 +180,7 @@ NM_ROOT_PATH = "/org/freedesktop/NetworkManager"
 NM_IFACE = "org.freedesktop.NetworkManager"
 NM_DEVICE_IFACE = "org.freedesktop.NetworkManager.Device"
 NM_WIRELESS_IFACE = "org.freedesktop.NetworkManager.Device.Wireless"
+NM_WIRED_IFACE = "org.freedesktop.NetworkManager.Device.Wired"
 NM_AP_IFACE = "org.freedesktop.NetworkManager.AccessPoint"
 NM_SETTINGS_PATH = "/org/freedesktop/NetworkManager/Settings"
 NM_SETTINGS_IFACE = "org.freedesktop.NetworkManager.Settings"
@@ -331,6 +345,25 @@ async def _get_modem_info(bus) -> dict:
                 logger.warning(f"Could not read SIM properties from {sim_path}: {e}")
         return info
     return {}
+
+
+async def _current_wifi_ssid(bus, wifi_path: str) -> Optional[str]:
+    """None unless the device is actually ACTIVATED on a real AP right now -
+    used to skip tearing down a working connection when the app resubmits
+    the same network it's already joined (confirmed on real hardware: an
+    unconditional delete+recreate here drops an active SSH session even
+    when the SSID/password submitted are identical to what's already
+    connected - ported from blynk_provisioning's standalone library, where
+    this was fixed first; see TODO.md)."""
+    dev = await _nm_interface(bus, wifi_path, NM_DEVICE_IFACE)
+    if await dev.get_state() != NM_DEVICE_STATE_ACTIVATED:
+        return None
+    wireless = await _nm_interface(bus, wifi_path, NM_WIRELESS_IFACE)
+    ap_path = await wireless.get_active_access_point()
+    if not ap_path or ap_path == "/":
+        return None
+    ap = await _nm_interface(bus, ap_path, NM_AP_IFACE)
+    return bytes(await ap.get_ssid()).decode("utf-8", errors="replace")
 
 
 async def _delete_existing_wifi_connections(bus, ssid: str) -> None:
@@ -700,20 +733,22 @@ class ProvisioningSession:
                     msg = {
                         "t": "if",
                         "name": name,
-                        "mac": await dev.get_hw_address(),
+                        "mac": await self._hw_address(dev, path, name),
                         "status": "ready" if state >= NM_DEVICE_STATE_ACTIVATED else "unavailable",
                         "static_ip": 1,
                     }
                     if name == "wifi":
                         msg["scan"] = 1
             except Exception as e:
-                # One misbehaving device (confirmed on real hardware: a
-                # laptop where some device's ProxyInterface didn't actually
-                # expose get_hw_address, for reasons not yet root-caused)
-                # used to abort enumeration entirely, silently hiding every
-                # other real interface - including ones that would have
-                # worked fine, like this same laptop's WiFi. Skip just the
-                # one device instead.
+                # One misbehaving device used to abort enumeration entirely,
+                # silently hiding every other real interface - including
+                # ones that would have worked fine, like that same laptop's
+                # WiFi. Skip just the one device instead. The original
+                # trigger for this (a laptop where some device's
+                # ProxyInterface didn't actually expose get_hw_address) is
+                # now root-caused and handled directly by _hw_address below,
+                # but this stays as a backstop against whatever else might
+                # go wrong reading an arbitrary NM device.
                 logger.error(f"Failed to read a NetworkManager device ({path}): {e}")
                 continue
             self.service.send(msg)
@@ -721,6 +756,22 @@ class ProvisioningSession:
         if not sent_any:
             self.service.send({"t": "if", "name": "eth", "status": "ready"})
         self.service.send({"t": "ifs_end"})
+
+    async def _hw_address(self, dev, path: str, name: str) -> str:
+        """Device.HwAddress only exists on NetworkManager >= 1.24; older NM
+        only has it on the type-specific Wired/Wireless interface. Root-
+        caused via blynk_provisioning's own standalone testing (confirmed
+        on Ubuntu 20.04, NM 1.22) after this project's own real-hardware
+        encounter with it went unexplained - see _do_ifs's own comment.
+        Without this fallback, a device on old NM silently never appears in
+        the app's interface picker at all."""
+        try:
+            return await dev.get_hw_address()
+        except AttributeError:
+            specific = await _nm_interface(
+                self.bus, path, NM_WIRELESS_IFACE if name == "wifi" else NM_WIRED_IFACE
+            )
+            return await specific.get_hw_address()
 
     async def _cell_if_message(self) -> dict:
         # apn is always reported as 1 (real-world cellular essentially
@@ -983,6 +1034,17 @@ class ProvisioningSession:
         wifi_path = await _get_wifi_device_path(self.bus)
         if wifi_path is None:
             return False, "generic"
+
+        # Already joined to exactly this network and no static-IP change
+        # was requested alongside it - nothing to do. If NM is ACTIVATED on
+        # this SSID at all, the stored credentials must already be correct
+        # (a wrong password would never have reached ACTIVATED), so there's
+        # no reason to delete/recreate the connection and force a rejoin.
+        if "ip" not in self._pending:
+            current_ssid = await _current_wifi_ssid(self.bus, wifi_path)
+            if current_ssid == ssid:
+                logger.info(f"Already connected to '{ssid}' - skipping WiFi reconfiguration")
+                return True, None
 
         await _delete_existing_wifi_connections(self.bus, ssid)
 

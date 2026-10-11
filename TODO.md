@@ -75,6 +75,20 @@ Beyond the release-gate mechanism itself, the actual scenarios exercised need to
 
 `agent.py` has grown to cover BLE provisioning entry points, OTA/compose management, the MQTT bridge, Terminal, and diagnostics all in one file. Already reasonably well-commented, but worth continuing to split out as functionality keeps stacking - raised independently by multiple external reviews. Gateway mode (sub-devices) has already been pulled out into its own `gateway.py` module as a first instance of this.
 
+## Depend on blynk-provisioning instead of our own ble_provisioning.py
+
+Decided (2026-10-10) to do this eventually, deliberately **not yet** - want to let [blynk-provisioning](https://github.com/anthony-blynk/blynk-provisioning) exist as a real dependency for a while first, not jump straight from "split out of this repo" to "this repo now depends on it" in the same week.
+
+Not a drop-in swap when we do it - `agent/ble_provisioning.py`'s `provision()` still takes `config, compose_manager, bridge` directly ([ble_provisioning.py:1132](agent/ble_provisioning.py#L1132)), never refactored to the generic `identity`/`fw_version`/`on_provisioned` shape blynk-provisioning's own copy was abstracted into when it split out. Its `_handle_reboot` also writes straight to `/proc/sysrq-trigger` ([ble_provisioning.py:1062-1068](agent/ble_provisioning.py#L1062-L1068)) - hardcoded in the engine, not a pluggable hook.
+
+Work involved when we pick this up:
+- **Library side**: add an `on_reboot_requested` callback (default no-op); formalize the `identity` duck-type (vendor_prefix/template_id/auth_token/server/save()) as an actual `Protocol`; promote `_ble` from a leading-underscore "no stability promised" internal module to something named and documented as real public API, since the agent would import it directly rather than vendoring a copy.
+- **Agent side**: refactor both call sites (the startup call and the watchdog-triggered reprovisioning thread) to pass `self.config` as the identity, `compose_manager.get_version()` as `fw_version`, `lambda changed: bridge.ensure_current(force_restart=True)` as `on_provisioned`, and the real sysrq-reboot function as the new hook. Then delete `agent/ble_provisioning.py`, add `blynk-provisioning` to `requirements.txt`, and make sure the Dockerfile actually installs it (same category of bug as the missing-`gateway.py` Dockerfile break that shipped in 2.6.0).
+
+The blocking-call model itself is already compatible - the agent already runs `provision()` in its own daemon thread for the watchdog case ([agent.py:1370](agent/agent.py#L1370)) and calls it before the main loop starts at startup ([agent.py:1648](agent/agent.py#L1648)), so there's no event-loop conflict to solve.
+
+The part that outlasts the refactor: this would make blynk-provisioning a real runtime dependency gating provisioning for the actual device fleet, not just a reference copy - a careless release there could directly break production devices. Worth treating its engine module with the same real-hardware release discipline this TODO already wants for the edge-agent itself (see "Real-hardware release gate" above) before taking that dependency, not after.
+
 ## README typos (P3)
 
 A few small typos flagged by external review ("abd OS's", "Raspbery", "authetication") - quick fix whenever.
