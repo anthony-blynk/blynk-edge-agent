@@ -389,6 +389,7 @@ class BlynkConfig:
 
 
 MQTT_BRIDGE_CONTAINER = "blynk-mqtt-bridge-1"  # docker-compose.yml's fixed `name: blynk` + service `mqtt-bridge`, single instance
+AGENT_CONTAINER = "blynk-agent-1"  # same convention, service `agent` - used from the detached apply helper to watch THIS container from outside it
 
 
 class MqttBridge:
@@ -709,6 +710,72 @@ class ComposeManager:
             logger.error(f"Failed to run docker compose: {e}")
             return False
 
+    # How long to watch the core containers for a crash loop after `up -d`
+    # itself already reported success, before declaring the apply genuinely
+    # successful - `up -d` exiting 0 only means Docker started the
+    # containers, not that they're still running moments later. Confirmed
+    # on real hardware (the mqtt-bridge crash-loop incident, see TODO.md)
+    # that a genuine crash loop's restart-policy backoff (2.6s, 2.8s, 4.0s,
+    # 5.6s...) fires several times well within a window this size.
+    POST_APPLY_WATCH_SECONDS = 25
+    POST_APPLY_POLL_INTERVAL = 3.0
+
+    @staticmethod
+    def _inspect_container(name: str) -> tuple:
+        """(is_running, restart_count) for a container by name. (False, 0)
+        if docker inspect itself fails (container doesn't exist, or some
+        other docker-level problem) - itself a failure signal here, not
+        something to silently ignore."""
+        try:
+            process = subprocess.run(
+                ["docker", "inspect", "--format", "{{.State.Running}} {{.RestartCount}}", name],
+                capture_output=True, text=True, timeout=10,
+            )
+            if process.returncode != 0:
+                return False, 0
+            running_str, restart_str = process.stdout.split()
+            return running_str == "true", int(restart_str)
+        except Exception as e:
+            logger.warning(f"Could not inspect {name}: {e}")
+            return False, 0
+
+    def _watch_for_crash_loop(self, containers: list) -> bool:
+        """Only watches the core, always-present containers (agent,
+        mqtt-bridge) passed in by the caller - a user's own uncommented
+        example service crash-looping shouldn't roll back an otherwise-fine
+        core update. Compares each container's restart count against its
+        own baseline taken right after `up -d` succeeded, rather than
+        assuming a fresh 0: `up -d` only recreates (and so only resets the
+        restart count of) a service whose definition actually changed - an
+        untouched sibling service keeps whatever restart count it already
+        had from unrelated history, which isn't this apply's concern.
+        Returns False (and logs why) as soon as a problem is seen, rather
+        than waiting out the rest of the window once it's already clear."""
+        baseline = {}
+        for name in containers:
+            running, restarts = self._inspect_container(name)
+            if not running:
+                logger.error(f"{name} is not running right after apply")
+                return False
+            baseline[name] = restarts
+
+        deadline = time.time() + self.POST_APPLY_WATCH_SECONDS
+        while time.time() < deadline:
+            time.sleep(self.POST_APPLY_POLL_INTERVAL)
+            for name in containers:
+                running, restarts = self._inspect_container(name)
+                if not running:
+                    logger.error(f"{name} stopped running during the post-apply health check")
+                    return False
+                if restarts > baseline[name]:
+                    logger.error(
+                        f"{name} restarted {restarts - baseline[name]} time(s) during the "
+                        f"post-apply health check - treating as a crash loop"
+                    )
+                    return False
+        logger.info(f"Post-apply health check passed for {', '.join(containers)}")
+        return True
+
     def _apply_via_helper(self, backup_path: Optional[Path]) -> bool:
         """`docker compose up -d` run directly from here would be a child
         process of THIS container - if the update recreates the agent
@@ -808,12 +875,15 @@ def run_apply_only(backup_arg: str) -> None:
     config = BlynkConfig()
     config.load()
 
-    if compose_manager._run_docker_compose():
+    if compose_manager._run_docker_compose() and compose_manager._watch_for_crash_loop(
+        [AGENT_CONTAINER, MQTT_BRIDGE_CONTAINER]
+    ):
         logger.info("Detached apply succeeded")
         publish_device_info_once(config, compose_manager)
         return
 
-    logger.error("Detached apply failed, attempting rollback")
+    logger.error("Detached apply failed (either `up -d` itself failed, or the new stack "
+                 "crash-looped during the post-apply health check), attempting rollback")
     backup_path = Path(backup_arg) if backup_arg else None
     if not backup_path or not backup_path.exists():
         candidates = sorted(BACKUP_DIR.glob("docker-compose_backup_*.yml"))

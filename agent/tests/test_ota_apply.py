@@ -111,6 +111,103 @@ class TestApplyViaHelper:
         assert calls[-1][-1] == ""
 
 
+class TestInspectContainer:
+    def test_parses_running_and_restart_count(self, monkeypatch):
+        monkeypatch.setattr(agent.subprocess, "run", lambda *a, **kw: _fake_proc(stdout="true 2\n"))
+        running, restarts = agent.ComposeManager._inspect_container("blynk-agent-1")
+        assert running is True
+        assert restarts == 2
+
+    def test_not_running(self, monkeypatch):
+        monkeypatch.setattr(agent.subprocess, "run", lambda *a, **kw: _fake_proc(stdout="false 0\n"))
+        running, restarts = agent.ComposeManager._inspect_container("blynk-agent-1")
+        assert running is False
+        assert restarts == 0
+
+    def test_inspect_command_failure_reports_not_running(self, monkeypatch):
+        monkeypatch.setattr(
+            agent.subprocess, "run",
+            lambda *a, **kw: _fake_proc(returncode=1, stderr="no such container"),
+        )
+        running, restarts = agent.ComposeManager._inspect_container("blynk-agent-1")
+        assert running is False
+        assert restarts == 0
+
+    def test_inspect_exception_reports_not_running(self, monkeypatch):
+        def raise_error(*a, **kw):
+            raise OSError("docker not found")
+
+        monkeypatch.setattr(agent.subprocess, "run", raise_error)
+        running, restarts = agent.ComposeManager._inspect_container("blynk-agent-1")
+        assert running is False
+        assert restarts == 0
+
+
+class TestWatchForCrashLoop:
+    """_watch_for_crash_loop's own window/poll-interval are shrunk to near-
+    zero on the instance for every test here - real values (25s/3s) would
+    make this suite itself take real wall-clock time for no benefit."""
+
+    @pytest.fixture
+    def manager(self, tmp_path, monkeypatch):
+        instance = agent.ComposeManager(compose_path=tmp_path / "docker-compose.yml")
+        monkeypatch.setattr(instance, "POST_APPLY_WATCH_SECONDS", 0.15)
+        monkeypatch.setattr(instance, "POST_APPLY_POLL_INTERVAL", 0.05)
+        return instance
+
+    def test_stable_container_passes(self, manager, monkeypatch):
+        monkeypatch.setattr(agent.subprocess, "run", lambda *a, **kw: _fake_proc(stdout="true 0\n"))
+        assert manager._watch_for_crash_loop(["blynk-agent-1"]) is True
+
+    def test_not_running_right_after_apply_fails_immediately(self, manager, monkeypatch):
+        monkeypatch.setattr(agent.subprocess, "run", lambda *a, **kw: _fake_proc(stdout="false 0\n"))
+        assert manager._watch_for_crash_loop(["blynk-agent-1"]) is False
+
+    def test_restart_count_increase_during_window_is_a_crash_loop(self, manager, monkeypatch):
+        calls = {"n": 0}
+
+        def fake_run(cmd, **kwargs):
+            calls["n"] += 1
+            # Baseline call (the very first) reports 0 restarts; every
+            # poll after that reports 1 - i.e. it restarted once mid-window.
+            restarts = 0 if calls["n"] == 1 else 1
+            return _fake_proc(stdout=f"true {restarts}\n")
+
+        monkeypatch.setattr(agent.subprocess, "run", fake_run)
+
+        assert manager._watch_for_crash_loop(["blynk-agent-1"]) is False
+
+    def test_stops_running_partway_through_the_window_fails(self, manager, monkeypatch):
+        calls = {"n": 0}
+
+        def fake_run(cmd, **kwargs):
+            calls["n"] += 1
+            running = "true" if calls["n"] == 1 else "false"
+            return _fake_proc(stdout=f"{running} 0\n")
+
+        monkeypatch.setattr(agent.subprocess, "run", fake_run)
+
+        assert manager._watch_for_crash_loop(["blynk-agent-1"]) is False
+
+    def test_pre_existing_restart_count_is_not_itself_a_failure(self, manager, monkeypatch):
+        # A sibling service untouched by this particular apply keeps
+        # whatever restart count it already had from unrelated history -
+        # only a NEW restart during the watch window should count.
+        monkeypatch.setattr(agent.subprocess, "run", lambda *a, **kw: _fake_proc(stdout="true 5\n"))
+        assert manager._watch_for_crash_loop(["blynk-mqtt-bridge-1"]) is True
+
+    def test_watches_every_container_given(self, manager, monkeypatch):
+        def fake_run(cmd, **kwargs):
+            name = cmd[-1]
+            if name == "blynk-agent-1":
+                return _fake_proc(stdout="true 0\n")
+            return _fake_proc(stdout="false 0\n")  # mqtt-bridge down
+
+        monkeypatch.setattr(agent.subprocess, "run", fake_run)
+
+        assert manager._watch_for_crash_loop(["blynk-agent-1", "blynk-mqtt-bridge-1"]) is False
+
+
 @pytest.fixture
 def apply_only_env(tmp_path, monkeypatch):
     """run_apply_only constructs ComposeManager()/BlynkConfig() with no
@@ -191,3 +288,35 @@ class TestRunApplyOnly:
         agent.run_apply_only("")
 
         agent.publish_device_info_once.assert_called_once()
+
+    def test_watches_core_containers_after_up_succeeds(self, apply_only_env):
+        apply_only_env.compose_manager._run_docker_compose.return_value = True
+        apply_only_env.compose_manager._watch_for_crash_loop.return_value = True
+
+        agent.run_apply_only("")
+
+        apply_only_env.compose_manager._watch_for_crash_loop.assert_called_once_with(
+            [agent.AGENT_CONTAINER, agent.MQTT_BRIDGE_CONTAINER]
+        )
+
+    def test_health_check_passing_does_not_roll_back(self, apply_only_env):
+        apply_only_env.compose_manager._run_docker_compose.return_value = True
+        apply_only_env.compose_manager._watch_for_crash_loop.return_value = True
+
+        agent.run_apply_only("")
+
+        assert apply_only_env.compose_manager._run_docker_compose.call_count == 1
+        agent.publish_device_info_once.assert_called_once()
+
+    def test_crash_loop_during_health_check_triggers_rollback(self, apply_only_env):
+        # `up -d` itself succeeded, but the post-apply health check caught
+        # a crash loop - must roll back exactly like an apply-failure would.
+        apply_only_env.compose_manager._run_docker_compose.return_value = True
+        apply_only_env.compose_manager._watch_for_crash_loop.return_value = False
+        backup_path = apply_only_env.backup_dir / "docker-compose_backup_20260101_000000.yml"
+        backup_path.write_text("x-stack:\n  version: \"0.9.0\"\n")
+
+        agent.run_apply_only(str(backup_path))
+
+        assert apply_only_env.compose_file.read_text() == backup_path.read_text()
+        assert apply_only_env.compose_manager._run_docker_compose.call_count == 2

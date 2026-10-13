@@ -15,12 +15,6 @@ Design discussed (not yet built - deliberately deferred, non-trivial): mirror Te
 
 Also worth watching: there's an internal Blynk roadmap item (currently delayed) for OTA to support multiple separate artifacts/channels for a device, rather than everything living in one `docker-compose.yml`. If that ships with its own natural separation between "update the Blynk-managed stack" and "update a user application," it could make this whole check unnecessary (or reshape it significantly) - worth checking that design before building the above from scratch.
 
-## OTA rollback: post-start health check, not just apply-failure
-
-`ComposeManager`/`run_apply_only` in `agent.py` already roll back to the last backed-up `docker-compose.yml` when `docker compose up -d` itself fails (non-zero exit - bad image ref, compose syntax error, etc.) - this part is done, not a gap. What's missing is the case where `up -d` succeeds but the new container then crash-loops or never becomes healthy afterward - nothing currently watches for that, so a device can end up "successfully applied" an OTA that's actually broken. Every comparable fleet-management system that came up while researching this (balena's post-boot health-check rollback on top of its unbootable-detection; Home Assistant OS's RAUC boot-attempt-counted fallback; AWS Greengrass's `FailureHandlingPolicy: ROLLBACK`, which explicitly covers a component that fails to report healthy, not just one that fails to start) treats this as a baseline expectation.
-
-Feasible pattern: after `_run_docker_compose()` reports success, watch the affected container(s) for N seconds (e.g. poll `docker inspect`'s restart count / running state) - if it crash-loops or exits repeatedly in that window, treat it the same as an apply failure and roll back via the existing backup-restore path in `run_apply_only`. Extends already-existing OTA-handling logic in `agent.py`, doesn't need new infrastructure.
-
 ## Show running services/containers on the dashboard
 
 A way to see what's actually running on a device from Blynk - both host `systemctl` services and Docker containers (`docker ps`) - came up while discussing per-device monitoring for a RAK LoRaWAN gateway (wanting to confirm its `basicstation` service and pre-existing `mosquitto` broker were healthy) and, separately, container health in general.
@@ -69,7 +63,7 @@ Worth staging rather than building the full automated version directly: a single
 
 ## Expand real-device test coverage (P2)
 
-Beyond the release-gate mechanism itself, the actual scenarios exercised need to grow: cloud-to-device roundtrip, OTA rollback (both the existing apply-failure path and the crash-loop case above), diagnostics reporting, Terminal (when deliberately enabled for a test run), and BLE provisioning on a dedicated test rig. Also round out unit test coverage in areas less exercised today: OTA, configuration loading, payload parsing.
+Beyond the release-gate mechanism itself, the actual scenarios exercised need to grow: cloud-to-device roundtrip, OTA rollback (both the apply-failure path and the post-apply crash-loop health check), diagnostics reporting, Terminal (when deliberately enabled for a test run), and BLE provisioning on a dedicated test rig. Also round out unit test coverage in areas less exercised today: OTA, configuration loading, payload parsing.
 
 ## Split agent.py into modules (P3)
 
