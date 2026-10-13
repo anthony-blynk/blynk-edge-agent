@@ -58,10 +58,12 @@ adapter, or one already relying on it for something incompatible, would
 fail to start this service. This is a per-device, opt-in example, enabled
 by hand on that device's own deployed copy of the file.
 
-Not yet verified end-to-end against real hardware - the BLE decode itself
-was (confirmed real, plausible temperature/humidity readings from an
-actual sensor), but this packaged container - including whether it needs
-`privileged: true` the way the barcode scanner example does, and whether
-continuous BLE scanning interferes with this device's own BLE
-provisioning - hasn't had a real run yet. Treat the first real attempt as
-iteration, same as every other hardware-facing example in this project.
+Verified end-to-end against real hardware: the full chain (sensor seen →
+auto-registered in `AgentSubDeviceRegistry` with a placeholder token →
+real token swapped in → real temperature/humidity/battery data showing up
+in the Blynk console) confirmed working, using exactly the packaged
+container and `docker-compose.yml` block as committed here - no
+`privileged: true` needed, the D-Bus socket mount alone is enough.
+
+Not yet tested: whether continuous BLE scanning here interferes with this
+device's own BLE provisioning capability running at the same time.

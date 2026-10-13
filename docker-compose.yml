@@ -133,10 +133,9 @@ services:
   #   depends_on:
   #     - mqtt-bridge
   #   # Talks to BlueZ over D-Bus, same mechanism the agent's own BLE
-  #   # provisioning already uses - not yet confirmed on real hardware
-  #   # whether this also needs privileged: true the way the barcode
-  #   # scanner example's raw evdev access does, or whether the D-Bus
-  #   # socket alone is enough.
+  #   # provisioning already uses - confirmed on real hardware that the
+  #   # D-Bus socket mount alone is enough, no privileged: true needed
+  #   # (unlike the barcode scanner example's raw evdev access).
   #   volumes:
   #     - /var/run/dbus:/var/run/dbus
 
