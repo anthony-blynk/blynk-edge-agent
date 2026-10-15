@@ -1052,6 +1052,16 @@ class ProvisioningSession:
             "connection": {
                 "id": Variant("s", ssid),
                 "type": Variant("s", "802-11-wireless"),
+                # NetworkManager's own autoconnect-retries default (what an
+                # unset value here resolves to) is a small finite number,
+                # not unlimited - confirmed on real hardware that once it's
+                # exhausted, NM just stops retrying and sits disconnected
+                # indefinitely (autoconnect itself stays "yes", it simply
+                # never fires again) until something external kicks it,
+                # e.g. a manual `nmcli connection up`. A field-deployed
+                # gateway has no one watching to notice and do that - 0
+                # means "retry forever" in NetworkManager's own convention.
+                "autoconnect-retries": Variant("i", 0),
             },
             "802-11-wireless": {
                 "ssid": Variant("ay", ssid.encode("utf-8")),
