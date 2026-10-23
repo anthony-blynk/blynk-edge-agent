@@ -1,0 +1,1854 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport"
+        content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <title>Modbus Console</title>
+  <style>
+    /* ── Theme tokens (style.md §2). data-theme is set from the APP theme. ── */
+    :root, :root[data-theme="light"] {
+      --text-primary: #03030A; --text-secondary: #5F5F66; --text-muted: #6E6E75;
+      --field-border: #E5E5EA; --switch-off: #D3D3D6;
+      --handle: #56565C; --handle-edge: none; --divider: rgba(3, 3, 10, .12); --surface: #FFFFFF;
+      --card: #FFFFFF; --block: rgba(3, 3, 10, .05);
+    }
+    :root[data-theme="dark"] {
+      --text-primary: #FFFFFF; --text-secondary: rgba(255, 255, 255, .7); --text-muted: rgba(255, 255, 255, .5);
+      --field-border: #5A5A62; --switch-off: #000000;
+      --handle: #F2F2F4; --handle-edge: 0 0 0 1px rgba(0, 0, 0, .45); --divider: rgba(255, 255, 255, .15); --surface: #1C1C1F;
+      --card: rgba(255, 255, 255, .04); --block: rgba(255, 255, 255, .07);
+    }
+    @media (prefers-color-scheme: dark) {        /* editor preview only */
+      :root:not([data-theme]) {
+        --text-primary: #FFFFFF; --text-secondary: rgba(255, 255, 255, .7); --text-muted: rgba(255, 255, 255, .5);
+        --field-border: #5A5A62; --switch-off: #000000;
+        --handle: #F2F2F4; --handle-edge: 0 0 0 1px rgba(0, 0, 0, .45); --divider: rgba(255, 255, 255, .15); --surface: #1C1C1F;
+        --card: rgba(255, 255, 255, .04); --block: rgba(255, 255, 255, .07);
+      }
+    }
+    :root {
+      --brand: #D1FF39; --primary: #10F17F; --positive: #3FA038; --warning: #FFC104; --critical: #FE1205;
+      --on-brand: #03030A; --brand-ghost: rgba(209, 255, 57, .15);
+      --font-primary: system-ui, sans-serif;
+      --font-values: system-ui, sans-serif;
+      --radius-card: 16px; --radius-block: 8px;   /* style.md §9 */
+    }
+
+    /* ── Iframe reset ── */
+    html, body {
+      margin: 0 !important; padding: 0 !important; height: 100%; overflow: hidden;
+      background: transparent;
+      touch-action: manipulation; -webkit-user-select: none; user-select: none;
+      -webkit-text-size-adjust: 100%; text-size-adjust: 100%;
+      -webkit-tap-highlight-color: transparent;
+    }
+    body { font-family: var(--font-primary, system-ui, sans-serif); color: var(--text-primary); font-size: 13px; }
+    *, *::before, *::after { box-sizing: border-box; }
+    [hidden] { display: none !important; }
+
+    /* ── Layout ── */
+    .stage { height: 100%; display: flex; flex-direction: column; container-type: size; }
+    .message { margin: auto; font-size: 13px; color: var(--text-muted); text-align: center; padding: 16px; }
+    .value { font-family: var(--font-values, system-ui, sans-serif); font-variant-numeric: tabular-nums; }
+    .console {
+      flex: 1; min-height: 0; display: flex; flex-direction: column;
+      background: var(--card); border: 1px solid var(--divider); border-radius: var(--radius-card);
+      overflow: hidden;
+    }
+
+    /* Header */
+    .head { display: flex; align-items: center; gap: 12px; padding: 12px 16px; border-bottom: 1px solid var(--divider); }
+    .head-text { flex: 1; min-width: 0; }
+    .eyebrow { font-size: 11px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: var(--text-secondary); }
+    .status-line { margin-top: 2px; font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .status-sub { margin-top: 1px; font-size: 12px; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .dot { width: 10px; height: 10px; border-radius: 999px; background: var(--switch-off); flex: none; }
+    .dot.ok { background: var(--positive); }
+    .dot.warn { background: var(--warning); }
+    .dot.bad { background: var(--critical); }
+
+    /* Tabs */
+    .tabs { display: flex; gap: 4px; padding: 8px 12px; border-bottom: 1px solid var(--divider); overflow-x: auto; }
+    .tab {
+      font: inherit; font-size: 12px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase;
+      padding: 6px 12px; border-radius: var(--radius-block); border: 1px solid transparent;
+      background: transparent; color: var(--text-secondary); cursor: pointer; white-space: nowrap;
+    }
+    .tab[aria-selected="true"] { border-color: var(--text-primary); color: var(--text-primary); }
+    .tab .count { margin-left: 4px; color: var(--text-muted); }
+
+    .scroller { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; padding: 12px; }
+    .panel { display: flex; flex-direction: column; gap: 8px; }
+
+    /* Point rows */
+    .row {
+      display: grid; grid-template-columns: 10px minmax(0, 1fr) auto; align-items: center; gap: 12px;
+      background: var(--block); border-radius: var(--radius-block); padding: 10px 12px;
+      cursor: pointer; border: 1px solid transparent;
+    }
+    .row:hover { border-color: var(--divider); }
+    .row-name { font-weight: 600; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .row-meta { margin-top: 2px; font-size: 12px; color: var(--text-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .row-err { margin-top: 2px; font-size: 12px; color: var(--text-primary); }
+    .row-value { font-size: 18px; font-weight: 700; text-align: right; white-space: nowrap; }
+    .row-value .unit { font-size: 12px; font-weight: 500; color: var(--text-secondary); margin-left: 2px; }
+    .tag {
+      display: inline-block; margin-left: 6px; padding: 1px 6px; border-radius: 999px;
+      font-size: 10px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; vertical-align: 2px;
+      background: var(--block); color: var(--text-secondary); border: 1px solid var(--divider);
+    }
+    .tag.draft { background: var(--brand); color: var(--on-brand); border-color: transparent; }
+
+    /* Forms */
+    .block { background: var(--block); border-radius: var(--radius-block); padding: 12px; }
+    .block-title { font-size: 11px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: var(--text-secondary); margin-bottom: 10px; }
+    .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 12px; }
+    .grid .wide { grid-column: 1 / -1; }
+    @container (min-width: 720px) { .grid { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
+    .field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+    .field > span { font-size: 11px; color: var(--text-secondary); }
+    .hint { font-size: 11px; color: var(--text-muted); }
+    .block > .hint { margin-top: 8px; }
+    input.input, select.input, textarea.input {
+      font: inherit; font-family: var(--font-primary, system-ui, sans-serif); font-size: 13px;
+      color: var(--text-primary); background: var(--card);
+      border: 1px solid var(--field-border); border-radius: var(--radius-block);
+      padding: 7px 10px; width: 100%; min-width: 0; -webkit-appearance: none; appearance: none;
+      -webkit-user-select: text; user-select: text;
+    }
+    select.input { padding-right: 28px; cursor: pointer; }
+    .select { position: relative; display: block; }
+    .select::after {
+      content: ''; position: absolute; right: 12px; top: 50%; width: 6px; height: 6px; margin-top: -5px;
+      border-right: 2px solid var(--text-secondary); border-bottom: 2px solid var(--text-secondary);
+      transform: rotate(45deg); pointer-events: none;
+    }
+    select.input option { background: var(--surface); color: var(--text-primary); }
+    textarea.input {
+      font-family: var(--font-values, system-ui, sans-serif); font-size: 12px; line-height: 1.5;
+      resize: vertical; min-height: 220px; white-space: pre; overflow-wrap: normal; overflow-x: auto;
+    }
+    .input:focus-visible, .btn:focus-visible, .tab:focus-visible, .row:focus-visible, .seg button:focus-visible {
+      outline: 2px solid var(--text-primary); outline-offset: 1px;
+    }
+    .input.invalid { border-color: var(--critical); }
+    @media (hover: none) { input.input, select.input, textarea.input { font-size: 16px; } }
+
+    .seg { display: flex; border: 1px solid var(--field-border); border-radius: var(--radius-block); overflow: hidden; }
+    .seg button {
+      flex: 1; font: inherit; font-size: 12px; font-weight: 600; padding: 7px 4px; border: 0; cursor: pointer;
+      background: transparent; color: var(--text-secondary);
+    }
+    .seg button + button { border-left: 1px solid var(--field-border); }
+    .seg button[aria-pressed="true"] { background: var(--brand); color: var(--on-brand); }
+    .seg button:disabled { color: var(--text-muted); cursor: default; background: var(--block); }
+
+    .check { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-secondary); cursor: pointer; }
+    .check input { width: 16px; height: 16px; accent-color: var(--text-primary); }
+
+    .actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 12px; }
+    .spacer { flex: 1; }
+    .btn {
+      font: inherit; font-size: 13px; font-weight: 600; padding: 7px 14px; border-radius: var(--radius-block);
+      border: 1px solid var(--field-border); background: var(--card); color: var(--text-primary); cursor: pointer;
+      white-space: nowrap;
+    }
+    .btn.primary { background: var(--brand); color: var(--on-brand); border-color: transparent; }
+    .btn.danger { border-color: var(--critical); }
+    .btn.link { border-color: transparent; background: transparent; padding-left: 4px; padding-right: 4px; color: var(--text-secondary); }
+    .btn:disabled { cursor: default; color: var(--text-muted); background: var(--block); border-color: transparent; }
+
+    .notice { display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px; border-radius: var(--radius-block); background: var(--block); font-size: 12px; color: var(--text-primary); }
+    .notice .dot { margin-top: 3px; }
+    .error-text { font-size: 12px; color: var(--text-primary); display: flex; gap: 8px; align-items: center; }
+    .empty { padding: 24px 12px; text-align: center; color: var(--text-muted); }
+
+    .add-menu { display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-end; }
+    .add-menu .field { width: 88px; }
+    .add-menu .field:has(select) { width: auto; flex: 0 1 160px; }
+
+    /* Port groups on the Points tab (only with more than one port) */
+    .group-head {
+      display: flex; align-items: baseline; gap: 8px; padding: 6px 2px 0;
+      font-size: 11px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: var(--text-secondary);
+    }
+    .group-head:not(:first-child) { margin-top: 6px; }
+    .group-sub { font-weight: 500; letter-spacing: 0; text-transform: none; color: var(--text-muted); }
+    .group-empty { padding: 2px 2px 4px; }
+
+    /* Probe results */
+    .reg-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    .reg-table th { text-align: left; font-weight: 600; color: var(--text-secondary); font-size: 11px; padding: 4px 8px 4px 0; border-bottom: 1px solid var(--divider); }
+    .reg-table td { padding: 5px 8px 5px 0; border-bottom: 1px solid var(--divider); }
+    .reg-table td.value { font-weight: 600; }
+
+    /* Save bar */
+    .savebar { display: flex; align-items: center; gap: 12px; padding: 10px 16px; border-top: 1px solid var(--divider); }
+    .meter { flex: 1; min-width: 0; }
+    .meter-label { font-size: 12px; color: var(--text-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .meter-track { height: 4px; border-radius: 999px; background: var(--switch-off); margin-top: 6px; overflow: hidden; }
+    .meter-fill { height: 100%; border-radius: 999px; background: var(--positive); width: 0; }
+    .meter-fill.warn { background: var(--warning); }
+    .meter-fill.bad { background: var(--critical); }
+
+    @container (max-width: 360px) {
+      .head, .savebar { padding-left: 12px; padding-right: 12px; }
+      .row-value { font-size: 15px; }
+    }
+  </style>
+</head>
+<body>
+  <main class="stage" id="stage">
+    <p class="message" id="message">Loading…</p>
+
+    <section class="console" id="console" hidden>
+      <header class="head" id="head">
+        <span class="dot" id="statusDot"></span>
+        <div class="head-text">
+          <div class="eyebrow">Modbus gateway</div>
+          <div class="status-line" id="statusLine">--</div>
+          <div class="status-sub" id="statusSub"></div>
+        </div>
+      </header>
+
+      <nav class="tabs" role="tablist" id="tabs">
+        <button class="tab" role="tab" data-tab="points" aria-selected="true">Points<span class="count" id="pointCount"></span></button>
+        <button class="tab" role="tab" data-tab="bus" aria-selected="false">Ports</button>
+        <button class="tab" role="tab" data-tab="test" aria-selected="false">Test</button>
+        <button class="tab" role="tab" data-tab="json" aria-selected="false">JSON</button>
+      </nav>
+
+      <div class="scroller" id="scroller">
+        <div class="panel" id="panel-points"></div>
+        <div class="panel" id="panel-bus" hidden></div>
+        <div class="panel" id="panel-test" hidden></div>
+        <div class="panel" id="panel-json" hidden></div>
+      </div>
+
+      <footer class="savebar" id="savebar">
+        <div class="meter">
+          <div class="meter-label" id="meterLabel">--</div>
+          <div class="meter-track"><div class="meter-fill" id="meterFill"></div></div>
+        </div>
+        <button class="btn link" id="discardBtn" type="button">Discard</button>
+        <button class="btn primary" id="saveBtn" type="button">Save</button>
+      </footer>
+    </section>
+  </main>
+
+<script>
+(function () {
+  'use strict';
+
+  /* ── 1. Numbers & datastream values ─────────────────────────────────────── */
+
+  // Bridge values are strings (or null) and may arrive locale-formatted.
+  function toNumber(raw) {
+    if (typeof raw === 'number') return raw;
+    if (raw === null || raw === undefined) return NaN;
+    let s = String(raw).trim()
+      .replace(/−/g, '-')
+      .replace(/[\s  ']/g, '');
+    if (!s) return NaN;
+
+    const lastComma = s.lastIndexOf(',');
+    const lastDot = s.lastIndexOf('.');
+    if (lastComma > -1 && lastDot > -1) {
+      s = lastComma > lastDot ? s.replace(/\./g, '').replace(',', '.') : s.replace(/,/g, '');
+    } else if (lastComma > -1) {
+      const grouping = /^-?[1-9]\d{0,2}(,\d{3})+$/.test(s) || /^-?[1-9]\d?(,\d{2})+,\d{3}$/.test(s);
+      s = grouping ? s.replace(/,/g, '') : s.replace(',', '.');
+    } else if (s.indexOf('.') !== lastDot) {
+      s = s.replace(/\./g, '');
+    }
+    const n = Number(s);
+    return Number.isFinite(n) ? n : NaN;
+  }
+
+  function formatNumber(n, decimalFormat) {
+    if (!Number.isFinite(n)) return '--';
+    const format = decimalFormat || '';
+    const match = /\.([0#]+)/.exec(format);
+    const maxDigits = match ? match[1].length : (format ? 0 : 2);
+    const minDigits = match ? (match[1].match(/0/g) || []).length : 0;
+
+    let text = n.toFixed(maxDigits);
+    if (maxDigits > 0) {
+      let [whole, fraction] = text.split('.');
+      while (fraction.length > minDigits && fraction.endsWith('0')) fraction = fraction.slice(0, -1);
+      text = fraction ? whole + '.' + fraction : whole;
+    }
+    return text === '-0' ? '0' : text;
+  }
+
+  function formatValue(v) {
+    if (!v || v.value === null || v.value === undefined || v.value === '') return '--';
+    if (v.type === 'ENUM') {
+      const i = Number.parseInt(v.value, 10);
+      return (v.mappings && v.mappings[i]) || v.enumFallbackValue || String(v.value);
+    }
+    if (v.type === 'INT' || v.type === 'DOUBLE') return formatNumber(toNumber(v.value), v.decimalFormat);
+    return String(v.value);
+  }
+
+  function streamName(v) {
+    return v.displayName || v.label || 'Datastream ' + (v.index + 1);
+  }
+
+  /* ── 2. Colors & theme ──────────────────────────────────────────────────── */
+
+  function parseHex(hex) {
+    const m = /^#?([0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})$/i.exec(String(hex || '').trim());
+    if (!m) return null;
+    let h = m[1];
+    if (h.length <= 4) h = h.split('').map(c => c + c).join('');
+    const byte = i => Number.parseInt(h.slice(i, i + 2), 16);
+    return { r: byte(0), g: byte(2), b: byte(4), a: h.length === 8 ? byte(6) / 255 : 1 };
+  }
+
+  function withAlpha(hex, alpha) {
+    const c = parseHex(hex);
+    if (!c) return hex;
+    const toHex = x => Math.round(x).toString(16).padStart(2, '0');
+    const a = Math.max(0, Math.min(1, alpha)) * 255;
+    return '#' + toHex(c.r) + toHex(c.g) + toHex(c.b) + toHex(a);
+  }
+
+  function isDark(hex) {
+    const c = parseHex(hex);
+    return !!c && (0.299 * c.r + 0.587 * c.g + 0.114 * c.b) < 128;
+  }
+
+  function applyTheme(theme) {
+    if (!theme) return;
+    const root = document.documentElement;
+    root.setAttribute('data-theme', isDark(theme.background) ? 'dark' : 'light');
+
+    const set = (name, value) => { if (value) root.style.setProperty(name, value); };
+    const text = (name, value) => value ? root.style.setProperty(name, value) : root.style.removeProperty(name);
+    text('--text-primary', theme.textTitle);
+    text('--text-secondary', theme.textSecondary);
+    text('--text-muted', theme.neutral);
+    text('--text-emphasis', theme.textEmphasis);
+    set('--brand', theme.brand);
+    set('--primary', theme.primary);
+    set('--positive', theme.positive);
+    set('--warning', theme.warning);
+    set('--critical', theme.critical);
+    set('--on-brand', theme.onBrand);
+    set('--surface', theme.background);
+    set('--brand-ghost', theme.brand && withAlpha(theme.brand, 0.15));
+    if (theme.primaryFont) set('--font-primary', '"' + theme.primaryFont + '", system-ui, sans-serif');
+    if (theme.widgetValuesFont) set('--font-values', '"' + theme.widgetValuesFont + '", system-ui, sans-serif');
+  }
+
+  /* ── 3. Modbus config model (docs/config-format.md) ─────────────────────── */
+
+  const MAX_CHARS = 1024;
+  const MAX_POINTS = 32;
+  const MAX_PORTS = 4;
+  const DS = { config: 'ModbusConfig', status: 'ModbusStatus', probe: 'ModbusProbe', result: 'ModbusProbeResult' };
+  const TABLES = {
+    co: 'Coil',
+    di: 'Discrete input',
+    hr: 'Holding register',
+    ir: 'Input register',
+  };
+  const TYPES = ['u16', 'i16', 'u32', 'i32', 'f32'];
+  const BAUDS = [1200, 2400, 4800, 9600, 19200, 38400, 57600, 115200];
+  const MODE_LABEL = { r: 'read', w: 'write', rw: 'read/write' };
+  const is32 = type => type === 'u32' || type === 'i32' || type === 'f32';
+  const isBitTable = table => table === 'co' || table === 'di';
+  const writable = table => table === 'co' || table === 'hr';
+
+  function defaultPort() {
+    return { baud: 9600, parity: 'N', stop: 1, timeout_ms: 1000 };
+  }
+
+  // Editable form: one settings object per RS485 port, and a flat point
+  // list where each point names its port (index). v2 nests points under
+  // their port; serializeConfig groups them.
+  function emptyConfig() {
+    return { v: 2, rev: 0, ports: [defaultPort()], poll_s: 5, pts: [] };
+  }
+
+  // Compact array -> editable object.
+  function expandPoint(arr, port) {
+    const opts = (arr.length > 6 && arr[6] && typeof arr[6] === 'object') ? arr[6] : {};
+    return {
+      port: port || 0,
+      ds: String(arr[0] ?? ''),
+      slave: arr[1],
+      table: arr[2],
+      addr: arr[3],
+      type: arr[4] || 'u16',
+      scale: arr[5] === undefined ? 1 : arr[5],
+      m: opts.m || 'r',
+      o: opts.o || 0,
+      wo: opts.wo || 'be',
+      b: opts.b,
+      dp: opts.dp,
+      p: opts.p,
+      map: opts.map,
+      fc16: !!opts.fc16,
+    };
+  }
+
+  // Editable object -> compact array, trailing defaults dropped.
+  function compactPoint(pt) {
+    const opts = {};
+    if (pt.m && pt.m !== 'r') opts.m = pt.m;
+    if (pt.o) opts.o = pt.o;
+    if (is32(pt.type) && pt.wo === 'le') opts.wo = 'le';
+    if (Number.isInteger(pt.b)) opts.b = pt.b;
+    if (Number.isInteger(pt.dp)) opts.dp = pt.dp;
+    if (pt.p) opts.p = pt.p;
+    if (pt.map && Object.keys(pt.map).length) opts.map = pt.map;
+    if (pt.fc16) opts.fc16 = true;
+
+    const arr = [pt.ds, pt.slave, pt.table, pt.addr];
+    const hasOpts = Object.keys(opts).length > 0;
+    const type = isBitTable(pt.table) ? 'u16' : pt.type;
+    if (hasOpts || pt.scale !== 1 || type !== 'u16') arr.push(type);
+    if (hasOpts || pt.scale !== 1) arr.push(pt.scale);
+    if (hasOpts) arr.push(opts);
+    return arr;
+  }
+
+  function parseConfig(text) {
+    if (!text) return emptyConfig();
+    const raw = JSON.parse(text);
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('Config must be a JSON object');
+    const cfg = emptyConfig();
+    cfg.rev = Number.isInteger(raw.rev) ? raw.rev : 0;
+    cfg.poll_s = raw.poll_s ?? 5;
+    // v1 (the template default, older saves): one port, settings in "bus"
+    let ports;
+    if (raw.v === 1 || raw.v === undefined) {
+      if (raw.ports !== undefined) throw new Error('"ports" needs "v": 2');
+      ports = [Object.assign({}, raw.bus || {}, { pts: raw.pts })];
+    } else if (raw.v === 2) {
+      if (raw.bus !== undefined || raw.pts !== undefined) throw new Error('v2 keeps "bus" settings and "pts" inside each of "ports"');
+      ports = raw.ports;
+      if (!Array.isArray(ports) || !ports.length) throw new Error('"ports" must be a list of at least one port');
+      if (ports.length > MAX_PORTS) throw new Error('At most ' + MAX_PORTS + ' ports');
+    } else {
+      throw new Error('Unknown format version "v": ' + JSON.stringify(raw.v));
+    }
+    cfg.ports = [];
+    cfg.pts = [];
+    ports.forEach((p, i) => {
+      if (!p || typeof p !== 'object' || Array.isArray(p)) throw new Error('Each port must be an object');
+      const settings = defaultPort();
+      for (const k of Object.keys(settings)) if (p[k] !== undefined) settings[k] = p[k];
+      cfg.ports.push(settings);
+      if (p.pts !== undefined && !Array.isArray(p.pts)) throw new Error('"pts" must be a list');
+      for (const arr of p.pts || []) {
+        if (!Array.isArray(arr)) throw new Error('Each point must be a list');
+        cfg.pts.push(expandPoint(arr, i));
+      }
+    });
+    return cfg;
+  }
+
+  function compactPort(port) {
+    const out = { baud: port.baud };
+    if (port.parity && port.parity !== 'N') out.parity = port.parity;
+    if (port.stop && port.stop !== 1) out.stop = port.stop;
+    if (port.timeout_ms && port.timeout_ms !== 1000) out.timeout_ms = port.timeout_ms;
+    return out;
+  }
+
+  function serializeConfig(cfg) {
+    const ports = cfg.ports.map((port, i) => Object.assign(compactPort(port),
+      { pts: cfg.pts.filter(p => p.port === i).map(compactPoint) }));
+    return JSON.stringify({ v: 2, rev: cfg.rev, poll_s: cfg.poll_s, ports });
+  }
+
+  // Human-editable JSON: one port settings line, then one point per line.
+  function prettyConfig(cfg) {
+    const compact = JSON.parse(serializeConfig(cfg));
+    const ports = compact.ports.map(port => {
+      const pts = port.pts.map(p => '      ' + JSON.stringify(p)).join(',\n');
+      const settings = JSON.stringify(Object.assign({}, port, { pts: undefined })).slice(0, -1);
+      return '    ' + settings + ', "pts": [' + (pts ? '\n' + pts + '\n    ' : '') + ']}';
+    }).join(',\n');
+    return '{\n' +
+      '  "v": 2,\n' +
+      '  "rev": ' + compact.rev + ',\n' +
+      '  "poll_s": ' + compact.poll_s + ',\n' +
+      '  "ports": [\n' + ports + '\n  ]\n' +
+      '}';
+  }
+
+  const isInt = (n, lo, hi) => Number.isInteger(n) && n >= lo && n <= hi;
+
+  function validatePoint(pt, others) {
+    if (!pt.ds) return 'Pick a datastream';
+    if (others.some(o => o.ds === pt.ds)) return '"' + pt.ds + '" is already used by another point';
+    if (!isInt(pt.slave, 1, 247)) return 'Slave id must be 1-247';
+    if (!TABLES[pt.table]) return 'Pick a register table';
+    if (!isInt(pt.addr, 0, 65535)) return 'Address must be 0-65535';
+    if (!isBitTable(pt.table) && TYPES.indexOf(pt.type) < 0) return 'Unknown data type';
+    if (!Number.isFinite(pt.scale) || pt.scale === 0) return 'Scale must be a non-zero number';
+    if (!Number.isFinite(pt.o)) return 'Offset must be a number';
+    if (!MODE_LABEL[pt.m]) return 'Unknown mode';
+    if (pt.m !== 'r' && !writable(pt.table)) return TABLES[pt.table] + 's are read-only';
+    if (pt.b !== undefined) {
+      if (!isInt(pt.b, 0, 15)) return 'Bit must be 0-15';
+      if (isBitTable(pt.table) || is32(pt.type)) return 'Bit only applies to 16-bit registers';
+      if (pt.m !== 'r') return 'Bit points are read-only';
+    }
+    if (pt.dp !== undefined && !isInt(pt.dp, 0, 6)) return 'Decimals must be 0-6';
+    if (pt.p !== undefined && !(Number.isFinite(pt.p) && pt.p >= 1)) return 'Poll interval must be at least 1 s';
+    if (pt.map) {
+      for (const k of Object.keys(pt.map)) {
+        if (!Number.isInteger(pt.map[k])) return 'Map values must be whole raw numbers';
+      }
+    }
+    return '';
+  }
+
+  function validatePort(b) {
+    if (BAUDS.indexOf(b.baud) < 0) return 'Unsupported baud rate';
+    if (['N', 'E', 'O'].indexOf(b.parity) < 0) return 'Parity must be N, E or O';
+    if (b.stop !== 1 && b.stop !== 2) return 'Stop bits must be 1 or 2';
+    if (!isInt(b.timeout_ms, 50, 10000)) return 'Timeout must be 50-10000 ms';
+    return '';
+  }
+
+  function validateConfig(cfg) {
+    if (!cfg.ports.length || cfg.ports.length > MAX_PORTS) return '1-' + MAX_PORTS + ' ports';
+    for (let i = 0; i < cfg.ports.length; i++) {
+      const err = validatePort(cfg.ports[i]);
+      if (err) return portName(i) + ': ' + err;
+    }
+    if (!(Number.isFinite(cfg.poll_s) && cfg.poll_s >= 1)) return 'Poll interval must be at least 1 s';
+    if (cfg.pts.length > MAX_POINTS) return 'At most ' + MAX_POINTS + ' points';
+    for (let i = 0; i < cfg.pts.length; i++) {
+      const err = isInt(cfg.pts[i].port, 0, cfg.ports.length - 1)
+        ? validatePoint(cfg.pts[i], cfg.pts.filter((_, j) => j !== i))
+        : 'Port ' + (cfg.pts[i].port + 1) + ' does not exist';
+      if (err) return (cfg.pts[i].ds || 'Point ' + (i + 1)) + ': ' + err;
+    }
+    return '';
+  }
+
+  // Humans count ports from 1; the config indexes them from 0.
+  const portName = i => 'Port ' + (i + 1);
+  const portLine = b => b.baud + ' 8' + b.parity + b.stop;
+
+  // Ports the gateway reported (ModbusStatus.ports; older gateways: 1), or
+  // null before it has reported at all.
+  function gatewayPorts() {
+    const st = state.status;
+    if (!st) return null;
+    return Number.isInteger(st.ports) && st.ports > 0 ? st.ports : 1;
+  }
+
+  // "1=256, 0=512" <-> {"1":256,"0":512}
+  function mapToText(map) {
+    return map ? Object.keys(map).map(k => k + '=' + map[k]).join(', ') : '';
+  }
+  function textToMap(text) {
+    const s = text.trim();
+    if (!s) return undefined;
+    const map = {};
+    for (const part of s.split(',')) {
+      const kv = part.split('=');
+      if (kv.length !== 2 || !kv[0].trim()) throw new Error('Write the map as value=raw, e.g. 1=256, 0=512');
+      const raw = parseIntLoose(kv[1]);
+      if (!Number.isInteger(raw)) throw new Error('"' + kv[1].trim() + '" is not a whole raw number');
+      map[normalizeKey(kv[0].trim())] = raw;
+    }
+    return map;
+  }
+  // Same normalisation the gateway applies to downlink values ("1.0" -> "1").
+  function normalizeKey(k) {
+    const n = Number(k);
+    return Number.isFinite(n) && k !== '' ? String(n) : k;
+  }
+
+  // Accepts decimal or 0x-prefixed hex.
+  function parseIntLoose(text) {
+    const s = String(text).trim();
+    if (/^-?0x[0-9a-f]+$/i.test(s)) return Number.parseInt(s, 16);
+    if (/^-?\d+$/.test(s)) return Number.parseInt(s, 10);
+    return NaN;
+  }
+
+  function defaultDecimals(scale) {
+    if (!Number.isFinite(scale) || scale >= 1 || scale <= 0) return 0;
+    return Math.min(6, Math.max(0, Math.ceil(-Math.log10(scale) - 1e-9)));
+  }
+
+  function pointSummary(pt) {
+    const parts = ['Slave ' + pt.slave, TABLES[pt.table] + ' ' + pt.addr];
+    if (!isBitTable(pt.table)) parts.push(Number.isInteger(pt.b) ? 'bit ' + pt.b : pt.type);
+    if (pt.scale !== 1) parts.push('×' + pt.scale);
+    if (pt.map) parts.push('map ' + mapToText(pt.map));
+    return parts.join(' · ');
+  }
+
+  /* ── 4. Bridge ──────────────────────────────────────────────────────────── */
+
+  const bridge = (typeof window.BlynkBridge === 'function')
+    ? new window.BlynkBridge({ logEnabled: true, isOnErrorEnabled: true })
+    : {
+        isBridgeAvailable: () => false,
+        sendValue: () => {}, sendError: () => {}, log: () => {},
+        setCallbacks: () => {}, setOnErrorEnabled: () => {}, setLogging: () => {}, destroy: () => {},
+        isExternalRequestsAllowed: () => false,
+        isRangePickerSupported: () => false,
+        isPageActionsSupported: () => false,
+        getValue: () => Promise.reject(new Error('no bridge')),
+        getValues: () => Promise.reject(new Error('no bridge')),
+        getTheme: () => Promise.reject(new Error('no bridge')),
+        getDeviceInfo: () => Promise.reject(new Error('no bridge')),
+        getHistoricalData: () => Promise.reject(new Error('no bridge')),
+        getMapData: () => Promise.reject(new Error('no bridge')),
+        getAllDeviceMetadata: () => Promise.reject(new Error('no bridge')),
+        getDeviceMetadata: () => Promise.reject(new Error('no bridge')),
+        updateDeviceMetadata: () => Promise.reject(new Error('no bridge')),
+        getPages: () => Promise.reject(new Error('no bridge')),
+        showPage: () => {}, closePage: () => {}, closeAllPages: () => {},
+      };
+  const live = bridge.isBridgeAvailable();
+
+  /* ── 5. State ───────────────────────────────────────────────────────────── */
+
+  const $ = id => document.getElementById(id);
+  const streams = new Map();           // index -> latest ValueObject
+  const roles = {};                    // 'config' | 'status' | ... -> index
+  const state = {
+    saved: null,                       // config last confirmed on the datastream
+    savedError: '',                    // datastream held unparseable JSON
+    draft: null,                       // what the user is editing
+    base: 0,                           // rev the draft was started from
+    status: null,
+    device: null,
+    tab: 'points',
+    editing: null,                     // index into draft.pts, or -1 for a new point
+    editor: null,                      // { node, read() } while the editor is open
+    saving: null,                      // { rev, timer }
+    conflict: null,                    // newer config from elsewhere while we had edits
+    probe: null,                       // { id, kind, request, timer, started }
+    probeResult: null,
+    lastProbeForm: null,
+  };
+
+  // rev is bookkeeping, not content: ignore it when comparing.
+  const sameContent = (a, b) => serializeConfig(Object.assign({}, a, { rev: 0 })) === serializeConfig(Object.assign({}, b, { rev: 0 }));
+  const dirty = () => !!state.draft && !!state.saved && !sameContent(state.draft, state.saved);
+
+  function el(tag, cls, text) {
+    const node = document.createElement(tag);
+    if (cls) node.className = cls;
+    if (text !== undefined && text !== null) node.textContent = String(text);
+    return node;
+  }
+
+  function clear(node) {
+    while (node.firstChild) node.removeChild(node.firstChild);
+  }
+
+  function relTime(sec) {
+    if (!Number.isFinite(sec) || sec < 0) return '';
+    if (sec < 60) return Math.round(sec) + ' s';
+    if (sec < 3600) return Math.round(sec / 60) + ' min';
+    if (sec < 172800) return Math.round(sec / 3600) + ' h';
+    return Math.round(sec / 86400) + ' days';
+  }
+
+  function streamFor(name) {
+    for (const v of streams.values()) {
+      if (v.label === name || v.displayName === name) return v;
+    }
+    return null;
+  }
+
+  // Every assigned datastream that isn't one of the four control streams.
+  function targetStreams() {
+    const control = Object.values(DS);
+    return Array.from(streams.values())
+      .filter(v => control.indexOf(v.label) < 0)
+      .sort((a, b) => a.index - b.index);
+  }
+
+  function parseJson(text) {
+    if (!text) return null;
+    try { return JSON.parse(text); } catch (e) { return null; }
+  }
+
+  /* ── 6. Incoming values ─────────────────────────────────────────────────── */
+
+  function assignRoles() {
+    for (const v of streams.values()) {
+      for (const role of Object.keys(DS)) {
+        if (v.label === DS[role] || v.displayName === DS[role]) roles[role] = v.index;
+      }
+    }
+  }
+
+  function ingest(v) {
+    // Pushes may carry fewer fields than getValues(): keep what we knew
+    streams.set(v.index, Object.assign({}, streams.get(v.index), v));
+    assignRoles();
+    if (v.index === roles.config) onConfigValue(v.value);
+    else if (v.index === roles.status) onStatusValue(v.value);
+    else if (v.index === roles.result) onProbeResult(v.value);
+  }
+
+  function onConfigValue(text) {
+    let cfg;
+    try {
+      cfg = parseConfig(text);
+      state.savedError = '';
+    } catch (e) {
+      state.savedError = 'The stored config is not valid JSON (' + e.message + '). Saving will replace it.';
+      cfg = emptyConfig();
+    }
+    const hadEdits = dirty();
+    state.saved = cfg;
+
+    if (state.saving && cfg.rev >= state.saving.rev) {
+      clearTimeout(state.saving.timer);
+      state.saving = null;
+    }
+    if (!state.draft || !hadEdits) {
+      state.draft = clone(cfg);
+      state.base = cfg.rev;
+      state.conflict = null;
+    } else if (cfg.rev > state.base) {
+      state.conflict = cfg;            // someone else saved while we were editing
+    }
+    renderAll();
+  }
+
+  function onStatusValue(text) {
+    const ports = gatewayPorts();
+    state.status = parseJson(text);
+    renderHeader();
+    renderPointList();
+    renderSaveBar();
+    // Only when it changed: re-rendering a tab drops what's being typed
+    if (gatewayPorts() !== ports) {
+      if (state.tab === 'bus') renderBus();
+      if (state.tab === 'test') renderTest();
+    }
+  }
+
+  function onProbeResult(text) {
+    const res = parseJson(text);
+    if (!res || !state.probe || res.id !== state.probe.id) return;   // stale or someone else's
+    clearTimeout(state.probe.timer);
+    state.probeResult = { request: state.probe.request, kind: state.probe.kind, res };
+    state.probe = null;
+    renderTest();
+  }
+
+  function clone(cfg) {
+    return parseConfig(serializeConfig(cfg));
+  }
+
+  /* ── 7. Header ──────────────────────────────────────────────────────────── */
+
+  function renderHeader() {
+    const dot = $('statusDot');
+    const line = $('statusLine');
+    const sub = $('statusSub');
+    const st = state.status;
+    const saved = state.saved;
+    const offline = state.device && String(state.device.status || '').toUpperCase() === 'OFFLINE';
+    const subParts = [];
+
+    let level = '';
+    let text;
+    if (!saved) {
+      text = 'Loading config…';
+    } else if (!st) {
+      level = offline ? 'bad' : 'warn';
+      text = offline ? 'Gateway offline' : 'Waiting for the gateway to report';
+      subParts.push('Config rev ' + saved.rev);
+    } else if (st.cfg && st.cfg !== 'ok') {
+      level = 'bad';
+      text = 'Gateway rejected the config';
+      subParts.push(String(st.cfg));
+    } else if (st.rev !== saved.rev) {
+      level = 'warn';
+      text = 'Applying rev ' + saved.rev + '…';
+      subParts.push('Gateway still running rev ' + st.rev);
+    } else {
+      const bad = st.bad ? Object.keys(st.bad).length + (st.more || 0) : 0;
+      level = bad ? 'warn' : 'ok';
+      text = (st.n ?? saved.pts.length) + ' points running' + (bad ? ' · ' + bad + ' failing' : '');
+      subParts.push('Rev ' + st.rev);
+    }
+
+    if (offline && st) { level = 'bad'; subParts.unshift('Gateway offline'); }
+    if (st && Number.isFinite(st.ts)) subParts.push('reported ' + relTime(Date.now() / 1000 - st.ts) + ' ago');
+    if (st && Number.isFinite(st.up)) subParts.push('up ' + relTime(st.up));
+
+    dot.className = 'dot' + (level ? ' ' + level : '');
+    line.textContent = text;
+    sub.textContent = subParts.join(' · ');
+  }
+
+  /* ── 8. Points tab ──────────────────────────────────────────────────────── */
+
+  const valueNodes = new Map();        // datastream name -> { value, unit }
+
+  function pointHealth(pt) {
+    const st = state.status;
+    const savedPt = state.saved && state.saved.pts.find(p => p.ds === pt.ds);
+    const unchanged = savedPt && savedPt.port === pt.port &&
+      JSON.stringify(compactPoint(savedPt)) === JSON.stringify(compactPoint(pt));
+    if (!unchanged) return { level: '', tag: savedPt ? 'edited' : 'new' };
+    if (!st || st.rev !== state.saved.rev || (st.cfg && st.cfg !== 'ok')) return { level: '' };
+    const err = st.bad && st.bad[pt.ds];
+    return err ? { level: 'bad', err: String(err) } : { level: 'ok' };
+  }
+
+  function renderPointList() {
+    const panel = $('panel-points');
+    if (!state.draft) return;
+    const editorNode = state.editor && state.editor.node;
+    clear(panel);
+    valueNodes.clear();
+    $('pointCount').textContent = state.draft.pts.length ? String(state.draft.pts.length) : '';
+
+    if (state.savedError) panel.appendChild(notice('bad', state.savedError));
+    if (state.conflict) panel.appendChild(conflictNotice());
+
+    // One port: a plain list, as before. Several: grouped under a heading each.
+    const multi = state.draft.ports.length > 1;
+    state.draft.ports.forEach((port, p) => {
+      const onPort = state.draft.pts.map((pt, i) => [pt, i]).filter(([pt]) => pt.port === p);
+      if (multi) {
+        const head = el('div', 'group-head');
+        head.appendChild(el('span', '', portName(p)));
+        head.appendChild(el('span', 'group-sub', portLine(port) + ' · ' + onPort.length + (onPort.length === 1 ? ' point' : ' points')));
+        panel.appendChild(head);
+        if (!onPort.length) panel.appendChild(el('div', 'hint group-empty', 'No points on this port yet.'));
+      }
+      onPort.forEach(([pt, i]) => {
+        if (state.editing === i && editorNode) { panel.appendChild(editorNode); return; }
+        panel.appendChild(pointRow(pt, i));
+      });
+    });
+
+    const removed = state.saved ? state.saved.pts.filter(s => !state.draft.pts.some(p => p.ds === s.ds)) : [];
+    if (removed.length) {
+      panel.appendChild(notice('', 'Removing on save: ' + removed.map(p => p.ds).join(', ')));
+    }
+
+    if (state.editing === -1 && editorNode) panel.appendChild(editorNode);
+    if (!state.draft.pts.length && state.editing === null) {
+      panel.appendChild(el('div', 'empty', 'No points yet. Add one below, or start from a device preset.'));
+    }
+    if (state.editing === null) panel.appendChild(addMenu());
+    updateLiveValues();
+  }
+
+  function pointRow(pt, i) {
+    const row = el('div', 'row');
+    row.tabIndex = 0;
+    row.setAttribute('role', 'button');
+    const health = pointHealth(pt);
+    row.appendChild(el('span', 'dot' + (health.level ? ' ' + health.level : '')));
+
+    const info = el('div');
+    const name = el('div', 'row-name', pt.ds);
+    const modeTag = el('span', 'tag', MODE_LABEL[pt.m]);
+    name.appendChild(modeTag);
+    if (health.tag) name.appendChild(el('span', 'tag draft', health.tag));
+    info.appendChild(name);
+    info.appendChild(el('div', 'row-meta', pointSummary(pt)));
+    if (health.err) info.appendChild(el('div', 'row-err', health.err));
+    row.appendChild(info);
+
+    const value = el('div', 'row-value value');
+    const num = el('span', '', '--');
+    const unit = el('span', 'unit', '');
+    value.appendChild(num);
+    value.appendChild(unit);
+    row.appendChild(value);
+    valueNodes.set(pt.ds, { value: num, unit });
+
+    const open = () => openEditor(i);
+    row.addEventListener('click', open);
+    row.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); } });
+    return row;
+  }
+
+  // The gateway already rounds each point to its register's resolution, so
+  // show the value as published rather than re-rounding with the host's
+  // decimalFormat (which dashboards were seen to send without decimals).
+  function pointValue(v) {
+    if (!v || v.value === null || v.value === undefined || v.value === '') return '--';
+    if (v.type === 'ENUM' || v.type === 'STRING') return formatValue(v);
+    const n = toNumber(v.value);
+    return Number.isFinite(n) ? formatNumber(n, '#.######') : String(v.value);
+  }
+
+  function updateLiveValues() {
+    for (const [name, nodes] of valueNodes) {
+      const v = streamFor(name);
+      nodes.value.textContent = pointValue(v);
+      nodes.unit.textContent = v && v.value !== null && v.value !== '' ? (v.suffix || '') : '';
+    }
+  }
+
+  function notice(level, text) {
+    const n = el('div', 'notice');
+    n.appendChild(el('span', 'dot' + (level ? ' ' + level : '')));
+    n.appendChild(el('span', '', text));
+    return n;
+  }
+
+  function conflictNotice() {
+    const n = notice('warn', 'Someone else saved rev ' + state.conflict.rev + ' while you were editing.');
+    const actions = el('div', 'actions');
+    const theirs = button('Load theirs', 'btn', () => {
+      state.draft = clone(state.conflict);
+      state.base = state.conflict.rev;
+      state.conflict = null;
+      closeEditor();
+      renderAll();
+    });
+    const mine = button('Keep mine', 'btn', () => {
+      state.base = state.conflict.rev;
+      state.conflict = null;
+      renderAll();
+    });
+    actions.appendChild(theirs);
+    actions.appendChild(mine);
+    n.lastChild.appendChild(actions);
+    return n;
+  }
+
+  function button(label, cls, onClick) {
+    const b = el('button', cls, label);
+    b.type = 'button';
+    b.addEventListener('click', onClick);
+    return b;
+  }
+
+  /* Presets: devices this project has verified on real hardware. */
+  const PRESETS = [
+    {
+      id: 'xymd02', label: 'XY-MD02 temp/humidity', slave: 1,
+      points: s => [
+        { ds: 'Temperature', slave: s, table: 'ir', addr: 1, type: 'i16', scale: 0.1 },
+        { ds: 'Humidity', slave: s, table: 'ir', addr: 2, type: 'u16', scale: 0.1 },
+      ],
+    },
+    {
+      id: 'relay', label: 'Relay (256 on / 512 off)', slave: 2,
+      points: s => [
+        { ds: 'Relay', slave: s, table: 'hr', addr: 1, type: 'u16', scale: 1, m: 'w', map: { '1': 256, '0': 512 } },
+      ],
+    },
+  ];
+
+  function addMenu() {
+    const wrap = el('div', 'block');
+    wrap.appendChild(el('div', 'block-title', 'Add'));
+    const row = el('div', 'add-menu');
+
+    const presetField = field('Device', selectInput(
+      [['blank', 'Blank point']].concat(PRESETS.map(p => [p.id, p.label])), 'blank'));
+    presetField.node.style.width = 'auto';
+    presetField.node.style.flex = '1 1 180px';
+    const portField = portSelect();
+    const slaveField = field('Slave id', textInput('', 'numeric'));
+    slaveField.input.placeholder = '1';
+    presetField.input.addEventListener('change', () => {
+      const preset = PRESETS.find(p => p.id === presetField.input.value);
+      slaveField.input.value = preset ? String(preset.slave) : '';
+    });
+    row.appendChild(presetField.node);
+    if (portField) row.appendChild(portField.node);
+    row.appendChild(slaveField.node);
+
+    const err = el('div', 'error-text');
+    const add = button('Add', 'btn primary', () => {
+      const preset = PRESETS.find(p => p.id === presetField.input.value);
+      const port = portField ? Number(portField.input.value) : 0;
+      const slave = slaveField.input.value.trim() ? parseIntLoose(slaveField.input.value) : (preset ? preset.slave : 1);
+      if (!isInt(slave, 1, 247)) { err.textContent = 'Slave id must be 1-247'; return; }
+      if (!preset) { openEditor(-1, { port, slave }); return; }
+      addPresetPoints(preset.points(slave).map(p => Object.assign({ port }, p)), err);
+    });
+    row.appendChild(add);
+    wrap.appendChild(row);
+    wrap.appendChild(err);
+    return wrap;
+  }
+
+  function addPresetPoints(points, err) {
+    const clash = points.find(p => state.draft.pts.some(q => q.ds === p.ds));
+    if (clash) {
+      err.textContent = '"' + clash.ds + '" is already used. Add a blank point instead and pick another datastream.';
+      return;
+    }
+    const added = points.map(p => Object.assign(expandPoint([p.ds, p.slave, p.table, p.addr], p.port), p));
+    if (state.draft.pts.length + added.length > MAX_POINTS) { err.textContent = 'At most ' + MAX_POINTS + ' points'; return; }
+    state.draft.pts = state.draft.pts.concat(added);
+    renderAll();
+  }
+
+  // A Port picker for the draft's ports, or null when there's only one.
+  function portSelect(value, count, ports) {
+    const settingsOf = ports || state.draft.ports;
+    const n = count || settingsOf.length;
+    if (n < 2) return null;
+    const options = [];
+    for (let i = 0; i < n; i++) {
+      const settings = settingsOf[i];
+      options.push([String(i), portName(i) + (settings ? ' · ' + portLine(settings) : '')]);
+    }
+    return field('Port', selectInput(options, String(value || 0)));
+  }
+
+  /* ── 9. Point editor ────────────────────────────────────────────────────── */
+
+  function field(label, input, hint) {
+    const node = el('label', 'field');
+    node.appendChild(el('span', '', label));
+    let wrapped = input;
+    if (input.tagName === 'SELECT') {
+      wrapped = el('span', 'select');
+      wrapped.appendChild(input);
+    }
+    node.appendChild(wrapped);
+    const hintNode = el('span', 'hint', hint || '');
+    hintNode.hidden = !hint;
+    node.appendChild(hintNode);
+    return { node, input, hint: hintNode };
+  }
+
+  function textInput(value, mode) {
+    const input = el('input', 'input value');
+    input.type = 'text';
+    input.value = value === undefined || value === null ? '' : String(value);
+    input.autocomplete = 'off';
+    input.spellcheck = false;
+    if (mode) input.inputMode = mode;
+    watchFocus(input);
+    return input;
+  }
+
+  function selectInput(options, value) {
+    const select = el('select', 'input');
+    for (const [v, label] of options) {
+      const o = el('option', '', label);
+      o.value = v;
+      select.appendChild(o);
+    }
+    select.value = value;
+    return select;
+  }
+
+  function segmented(options, value, onChange) {
+    const node = el('div', 'seg');
+    const buttons = options.map(([v, label]) => {
+      const b = button(label, '', () => { set(v); onChange(v); });
+      b.dataset.value = v;
+      node.appendChild(b);
+      return b;
+    });
+    function set(v) {
+      value = v;
+      buttons.forEach(b => b.setAttribute('aria-pressed', String(b.dataset.value === v)));
+    }
+    set(value);
+    return {
+      node,
+      get: () => value,
+      set,
+      enable: (v, on) => { const b = buttons.find(x => x.dataset.value === v); if (b) b.disabled = !on; },
+    };
+  }
+
+  function openEditor(index, seed) {
+    if (state.editor && state.editing !== index) closeEditor();
+    const isNew = index === -1;
+    const pt = isNew
+      ? expandPoint(['', (seed && seed.slave) || 1, 'hr', 0, 'u16', 1], seed && seed.port)
+      : Object.assign({}, state.draft.pts[index]);
+    if (seed) Object.assign(pt, seed);
+
+    const card = el('div', 'block');
+    card.appendChild(el('div', 'block-title', isNew ? 'New point' : 'Edit point'));
+    const grid = el('div', 'grid');
+    card.appendChild(grid);
+
+    // Datastream: assigned targets, plus "Other" for one not assigned to this widget.
+    const names = targetStreams().map(v => v.label);
+    if (pt.ds && names.indexOf(pt.ds) < 0) names.push(pt.ds);
+    const dsOptions = [['', 'Choose…']].concat(names.map(n => {
+      const v = streamFor(n);
+      return [n, v ? streamName(v) + (v.displayName && v.displayName !== n ? ' (' + n + ')' : '') : n];
+    })).concat([['__other', 'Other datastream…']]);
+    const dsField = field('Datastream', selectInput(dsOptions, pt.ds));
+    dsField.node.classList.add('wide');
+    const otherField = field('Datastream name', textInput(''), 'Must already exist on the template. Assign it to this widget to see live values.');
+    otherField.node.classList.add('wide');
+    otherField.node.hidden = true;
+    dsField.input.addEventListener('change', () => {
+      otherField.node.hidden = dsField.input.value !== '__other';
+      if (!otherField.node.hidden) otherField.input.focus();
+    });
+    grid.appendChild(dsField.node);
+    grid.appendChild(otherField.node);
+
+    const portF = portSelect(pt.port);
+    if (portF) grid.appendChild(portF.node);
+    const slaveF = field('Slave id', textInput(pt.slave, 'numeric'));
+    const tableF = field('Table', selectInput(Object.keys(TABLES).map(k => [k, TABLES[k]]), pt.table));
+    const addrF = field('Address', textInput(pt.addr, 'numeric'), '0-based, as sent on the wire. 0x… works.');
+    const typeF = field('Data type', selectInput(TYPES.map(t => [t, {
+      u16: 'u16 unsigned', i16: 'i16 signed', u32: 'u32 unsigned',
+      i32: 'i32 signed', f32: 'f32 float',
+    }[t]]), pt.type));
+    const scaleF = field('Scale', textInput(pt.scale, 'decimal'), 'value = raw × scale + offset');
+    [slaveF, tableF, addrF, typeF, scaleF].forEach(f => grid.appendChild(f.node));
+
+    const modeWrap = el('div', 'field');
+    modeWrap.appendChild(el('span', '', 'Mode'));
+    const mode = segmented([['r', 'Read'], ['w', 'Write'], ['rw', 'Both']], pt.m, sync);
+    modeWrap.appendChild(mode.node);
+    grid.appendChild(modeWrap);
+
+    const mapF = field('Value map', textInput(mapToText(pt.map)),
+      'Datastream value = raw, e.g. 1=256, 0=512. Leave empty to use scale.');
+    mapF.node.classList.add('wide');
+    grid.appendChild(mapF.node);
+
+    // Less common options, collapsed.
+    const moreToggle = button('More options', 'btn link', () => {
+      moreGrid.hidden = !moreGrid.hidden;
+      moreToggle.textContent = moreGrid.hidden ? 'More options' : 'Fewer options';
+    });
+    const moreGrid = el('div', 'grid');
+    moreGrid.style.marginTop = '10px';
+    const offsetF = field('Offset', textInput(pt.o, 'decimal'));
+    const woF = field('Word order', selectInput([['be', 'High word first (ABCD)'], ['le', 'Low word first (CDAB)']], pt.wo));
+    const bitF = field('Bit', textInput(pt.b, 'numeric'), '0-15: read one bit');
+    const dpF = field('Decimals', textInput(pt.dp, 'numeric'));
+    const pollF = field('Poll every (s)', textInput(pt.p, 'decimal'));
+    pollF.input.placeholder = String(state.draft.poll_s);
+    const fc16Wrap = el('label', 'check');
+    const fc16 = el('input');
+    fc16.type = 'checkbox';
+    fc16.checked = pt.fc16;
+    fc16Wrap.appendChild(fc16);
+    fc16Wrap.appendChild(el('span', '', 'Write with FC16'));
+    const fc16Field = el('div', 'field');
+    fc16Field.appendChild(el('span', '', 'Function'));
+    fc16Field.appendChild(fc16Wrap);
+    [offsetF, woF, bitF, dpF, pollF].forEach(f => moreGrid.appendChild(f.node));
+    moreGrid.appendChild(fc16Field);
+    const hasMore = pt.o || pt.wo === 'le' || Number.isInteger(pt.b) || Number.isInteger(pt.dp) || pt.p || pt.fc16;
+    moreGrid.hidden = !hasMore;
+    moreToggle.textContent = hasMore ? 'Fewer options' : 'More options';
+
+    const toggleRow = el('div', 'actions');
+    toggleRow.style.marginTop = '4px';
+    toggleRow.appendChild(moreToggle);
+    card.appendChild(toggleRow);
+    card.appendChild(moreGrid);
+
+    function sync() {
+      const table = tableF.input.value;
+      const bits = isBitTable(table);
+      typeF.node.hidden = bits;
+      scaleF.node.hidden = bits;
+      mode.enable('w', writable(table));
+      mode.enable('rw', writable(table));
+      if (!writable(table) && mode.get() !== 'r') mode.set('r');
+      const type = typeF.input.value;
+      woF.node.hidden = bits || !is32(type);
+      bitF.node.hidden = bits || is32(type) || mode.get() !== 'r';
+      fc16Field.hidden = table !== 'hr' || mode.get() === 'r' || is32(type);
+      dpF.input.placeholder = String(defaultDecimals(toNumber(scaleF.input.value)));
+    }
+    tableF.input.addEventListener('change', sync);
+    typeF.input.addEventListener('change', sync);
+    scaleF.input.addEventListener('input', sync);
+    sync();
+
+    const err = el('div', 'error-text');
+    card.appendChild(err);
+
+    const actions = el('div', 'actions');
+    if (!isNew) {
+      actions.appendChild(button('Delete', 'btn danger', () => {
+        state.draft.pts.splice(index, 1);
+        closeEditor();
+        renderAll();
+      }));
+    }
+    actions.appendChild(el('span', 'spacer'));
+    actions.appendChild(button('Cancel', 'btn', () => { closeEditor(); renderAll(); }));
+    actions.appendChild(button(isNew ? 'Add point' : 'Done', 'btn primary', () => {
+      let next;
+      try { next = read(); } catch (e) { err.textContent = e.message; return; }
+      const others = state.draft.pts.filter((_, j) => j !== index);
+      const problem = validatePoint(next, others);
+      if (problem) { err.textContent = problem; return; }
+      if (isNew) state.draft.pts.push(next);
+      else state.draft.pts[index] = next;
+      closeEditor();
+      renderAll();
+    }));
+    card.appendChild(actions);
+
+    function optionalInt(input, label) {
+      const s = input.value.trim();
+      if (!s) return undefined;
+      const n = parseIntLoose(s);
+      if (!Number.isInteger(n)) throw new Error(label + ' must be a whole number');
+      return n;
+    }
+    function optionalNum(input, label) {
+      const s = input.value.trim();
+      if (!s) return undefined;
+      const n = toNumber(s);
+      if (!Number.isFinite(n)) throw new Error(label + ' must be a number');
+      return n;
+    }
+
+    function read() {
+      const ds = dsField.input.value === '__other' ? otherField.input.value.trim() : dsField.input.value;
+      const table = tableF.input.value;
+      const bits = isBitTable(table);
+      const type = bits ? 'u16' : typeF.input.value;
+      const m = mode.get();
+      const next = {
+        port: portF ? Number(portF.input.value) : 0,
+        ds,
+        slave: optionalInt(slaveF.input, 'Slave id'),
+        table,
+        addr: optionalInt(addrF.input, 'Address'),
+        type,
+        scale: bits ? 1 : (optionalNum(scaleF.input, 'Scale') ?? 1),
+        m,
+        o: optionalNum(offsetF.input, 'Offset') || 0,
+        wo: !bits && is32(type) ? woF.input.value : 'be',
+        b: !bitF.node.hidden ? optionalInt(bitF.input, 'Bit') : undefined,
+        dp: optionalInt(dpF.input, 'Decimals'),
+        p: optionalNum(pollF.input, 'Poll interval'),
+        map: textToMap(mapF.input.value),
+        fc16: !fc16Field.hidden && fc16.checked,
+      };
+      if (next.slave === undefined) throw new Error('Enter a slave id');
+      if (next.addr === undefined) throw new Error('Enter an address');
+      return next;
+    }
+
+    state.editing = index;
+    state.editor = { node: card, read };
+    renderPointList();
+    if (matchMedia('(hover: hover)').matches) {
+      const first = isNew ? dsField.input : slaveF.input;
+      first.focus({ preventScroll: true });
+    }
+    card.scrollIntoView({ block: 'nearest' });
+  }
+
+  function closeEditor() {
+    state.editing = null;
+    state.editor = null;
+  }
+
+  /* ── 10. Ports tab ──────────────────────────────────────────────────────── */
+
+  function renderBus() {
+    const panel = $('panel-bus');
+    clear(panel);
+    if (!state.draft) return;
+    const cfg = state.draft;
+
+    const general = el('div', 'block');
+    general.appendChild(el('div', 'block-title', 'Polling'));
+    const generalGrid = el('div', 'grid');
+    general.appendChild(generalGrid);
+    const poll = field('Poll every (s)', textInput(cfg.poll_s, 'decimal'), 'Default for all read points');
+    generalGrid.appendChild(poll.node);
+    const pollErr = el('div', 'error-text');
+    general.appendChild(pollErr);
+    poll.input.addEventListener('input', () => {
+      const p = toNumber(poll.input.value);
+      poll.input.classList.toggle('invalid', !(p >= 1));
+      if (!(p >= 1)) { pollErr.textContent = 'Poll interval must be at least 1 s'; return; }
+      pollErr.textContent = '';
+      cfg.poll_s = p;
+      renderSaveBar();
+    });
+    panel.appendChild(general);
+
+    cfg.ports.forEach((port, i) => panel.appendChild(portBlock(cfg, port, i)));
+
+    const gp = gatewayPorts();
+    const actions = el('div', 'actions');
+    actions.style.marginTop = '0';
+    const addBtn = button('Add port', 'btn', () => {
+      cfg.ports.push(defaultPort());
+      renderAll();
+    });
+    addBtn.disabled = cfg.ports.length >= MAX_PORTS || (gp !== null && cfg.ports.length >= gp);
+    actions.appendChild(addBtn);
+    actions.appendChild(el('span', 'hint', gp === null
+      ? 'The gateway hasn\'t reported how many ports it has yet.'
+      : 'This gateway has ' + gp + (gp === 1 ? ' RS485 port.' : ' RS485 ports.')));
+    panel.appendChild(actions);
+
+    panel.appendChild(notice('', 'Every slave on a port shares that port\'s settings; slave ids only need to be unique per port. ' +
+      'Ports are in the gateway\'s own order (Port 1 is its first serial port), set on the gateway itself.'));
+  }
+
+  function portBlock(cfg, port, i) {
+    const block = el('div', 'block');
+    const multi = cfg.ports.length > 1;
+    block.appendChild(el('div', 'block-title', multi ? portName(i) : 'RS485 port'));
+    const grid = el('div', 'grid');
+    block.appendChild(grid);
+
+    const baud = field('Baud rate', selectInput(BAUDS.map(b => [String(b), String(b)]), String(port.baud)));
+    const parity = field('Parity', selectInput([['N', 'None'], ['E', 'Even'], ['O', 'Odd']], port.parity));
+    const stop = field('Stop bits', selectInput([['1', '1'], ['2', '2']], String(port.stop)));
+    const timeout = field('Timeout (ms)', textInput(port.timeout_ms, 'numeric'), 'Per request');
+    [baud, parity, stop, timeout].forEach(f => grid.appendChild(f.node));
+
+    const err = el('div', 'error-text');
+    block.appendChild(err);
+
+    function commit() {
+      const t = parseIntLoose(timeout.input.value);
+      timeout.input.classList.toggle('invalid', !isInt(t, 50, 10000));
+      if (!isInt(t, 50, 10000)) { err.textContent = 'Timeout must be 50-10000 ms'; return; }
+      err.textContent = '';
+      port.baud = Number(baud.input.value);
+      port.parity = parity.input.value;
+      port.stop = Number(stop.input.value);
+      port.timeout_ms = t;
+      renderSaveBar();
+    }
+    [baud, parity, stop].forEach(f => f.input.addEventListener('change', commit));
+    timeout.input.addEventListener('input', commit);
+
+    if (multi) {
+      const actions = el('div', 'actions');
+      actions.appendChild(button('Remove port', 'btn danger', () => {
+        const used = cfg.pts.filter(p => p.port === i).length;
+        if (used) {
+          err.textContent = 'Move or delete the ' + used + (used === 1 ? ' point' : ' points') + ' on ' + portName(i) + ' first.';
+          return;
+        }
+        // Later ports move up one, so their points follow them
+        cfg.ports.splice(i, 1);
+        cfg.pts.forEach(p => { if (p.port > i) p.port -= 1; });
+        renderAll();
+      }));
+      block.appendChild(actions);
+    }
+    return block;
+  }
+
+  /* ── 11. Test tab (ModbusProbe) ─────────────────────────────────────────── */
+
+  function renderTest() {
+    const panel = $('panel-test');
+    clear(panel);
+    if (roles.probe === undefined || roles.result === undefined) {
+      panel.appendChild(notice('warn', 'Assign the ModbusProbe and ModbusProbeResult datastreams to this widget to test registers.'));
+      return;
+    }
+    const f = state.lastProbeForm || { p: '0', s: '1', t: 'ir', a: '1', c: '2', w: '', from: '1', to: '10', st: 'any', sa: '0' };
+
+    // Probes run with the running (saved) config's port settings, and can
+    // reach any port the gateway has - even one with nothing configured yet
+    const running = state.saved ? state.saved.ports : [];
+    const probePorts = Math.max(gatewayPorts() || 1, running.length);
+    const portF = portSelect(Number(f.p) < probePorts ? f.p : 0, probePorts, running);
+    if (portF) {
+      const portBlock = el('div', 'block');
+      const portGrid = el('div', 'grid');
+      portGrid.appendChild(portF.node);
+      portBlock.appendChild(portGrid);
+      portBlock.appendChild(el('div', 'hint', 'Tests below run on this port, with its saved settings.'));
+      panel.appendChild(portBlock);
+    }
+
+    const block = el('div', 'block');
+    block.appendChild(el('div', 'block-title', 'Read or write a register'));
+    const grid = el('div', 'grid');
+    block.appendChild(grid);
+    const slave = field('Slave id', textInput(f.s, 'numeric'));
+    const table = field('Table', selectInput(Object.keys(TABLES).map(k => [k, TABLES[k]]), f.t));
+    const addr = field('Address', textInput(f.a, 'numeric'));
+    const count = field('Count', textInput(f.c, 'numeric'), '1-16');
+    const wval = field('Write raw value', textInput(f.w, 'numeric'), 'Coils take 0 or 1');
+    [slave, table, addr, count, wval].forEach(x => grid.appendChild(x.node));
+
+    const err = el('div', 'error-text');
+    block.appendChild(err);
+    const busy = !!state.probe;
+    const actions = el('div', 'actions');
+    const readBtn = button(busy && state.probe.kind === 'read' ? 'Reading…' : 'Read', 'btn primary', () => run('read'));
+    const writeBtn = button(busy && state.probe.kind === 'write' ? 'Writing…' : 'Write', 'btn', () => run('write'));
+    readBtn.disabled = busy;
+    writeBtn.disabled = busy || !writable(table.input.value);
+    table.input.addEventListener('change', () => { writeBtn.disabled = busy || !writable(table.input.value); });
+    actions.appendChild(readBtn);
+    actions.appendChild(writeBtn);
+    block.appendChild(actions);
+    panel.appendChild(block);
+
+    const scanBlock = el('div', 'block');
+    scanBlock.appendChild(el('div', 'block-title', 'Find slaves on the bus'));
+    const scanGrid = el('div', 'grid');
+    const from = field('From id', textInput(f.from, 'numeric'));
+    const to = field('To id', textInput(f.to, 'numeric'), 'At most 16 ids per scan');
+    const scanTable = field('Try', selectInput(
+      [['any', 'Holding, then input']].concat(Object.keys(TABLES).map(k => [k, TABLES[k] + ' only'])), f.st));
+    const scanAddr = field('Address', textInput(f.sa, 'numeric'));
+    [from, to, scanTable, scanAddr].forEach(x => scanGrid.appendChild(x.node));
+    scanBlock.appendChild(scanGrid);
+    scanBlock.appendChild(el('div', 'hint',
+      'Reads 1 register from each id; an error reply still counts as found. Devices often answer only one table, so "Holding, then input" tries both. Waits 200 ms per try, so an empty id costs up to 0.4 s.'));
+    const scanErr = el('div', 'error-text');
+    scanBlock.appendChild(scanErr);
+    const scanActions = el('div', 'actions');
+    const scanBtn = button(busy && state.probe.kind === 'scan' ? 'Scanning…' : 'Scan', 'btn', () => run('scan'));
+    scanBtn.disabled = busy;
+    scanActions.appendChild(scanBtn);
+    scanBlock.appendChild(scanActions);
+    panel.appendChild(scanBlock);
+
+    if (state.probeResult) panel.appendChild(probeResultBlock(state.probeResult));
+    if (busy) panel.appendChild(notice('warn', 'Waiting for the gateway…'));
+
+    function run(kind) {
+      state.lastProbeForm = {
+        p: portF ? portF.input.value : '0',
+        s: slave.input.value, t: table.input.value, a: addr.input.value, c: count.input.value,
+        w: wval.input.value, from: from.input.value, to: to.input.value,
+        st: scanTable.input.value, sa: scanAddr.input.value,
+      };
+      const target = kind === 'scan' ? scanErr : err;
+      const req = kind === 'scan'
+        ? { id: Math.random().toString(36).slice(2, 7), t: scanTable.input.value, a: parseIntLoose(scanAddr.input.value) }
+        : { id: Math.random().toString(36).slice(2, 7), t: table.input.value, a: parseIntLoose(addr.input.value) };
+      if (!isInt(req.a, 0, 65535)) { target.textContent = 'Address must be 0-65535'; return; }
+      // Omitted for port 1, so a gateway from before ports still accepts it
+      const port = portF ? Number(portF.input.value) : 0;
+      if (port) req.p = port;
+      if (kind === 'scan') {
+        const lo = parseIntLoose(from.input.value);
+        const hi = parseIntLoose(to.input.value);
+        if (!isInt(lo, 1, 247) || !isInt(hi, lo, 247) || hi - lo > 15) {
+          target.textContent = 'Use a range of up to 16 ids within 1-247'; return;
+        }
+        req.scan = [lo, hi];
+      } else {
+        req.s = parseIntLoose(slave.input.value);
+        if (!isInt(req.s, 1, 247)) { target.textContent = 'Slave id must be 1-247'; return; }
+        if (kind === 'read') {
+          req.c = parseIntLoose(count.input.value || '1');
+          if (!isInt(req.c, 1, 16)) { target.textContent = 'Count must be 1-16'; return; }
+        } else {
+          req.w = parseIntLoose(wval.input.value);
+          const max = req.t === 'co' ? 1 : 65535;
+          if (!isInt(req.w, 0, max)) { target.textContent = 'Write value must be 0-' + max; return; }
+        }
+      }
+      sendProbe(kind, req);
+    }
+  }
+
+  function sendProbe(kind, req) {
+    // Scans wait up to 200 ms per try per silent id; leave headroom for MQTT both ways.
+    const port = state.saved && state.saved.ports[req.p || 0];
+    const busTimeout = (port && port.timeout_ms) || 1000;
+    const tries = req.t === 'any' ? 2 : 1;
+    const wait = kind === 'scan'
+      ? (req.scan[1] - req.scan[0] + 1) * tries * Math.min(busTimeout, 200) + 15000
+      : busTimeout + 15000;
+    state.probeResult = null;
+    state.probe = {
+      id: req.id, kind, request: req, started: Date.now(),
+      timer: setTimeout(() => {
+        state.probeResult = { request: req, kind, res: { ok: false, err: 'no answer from the gateway (is it online?)' } };
+        state.probe = null;
+        renderTest();
+      }, wait),
+    };
+    try {
+      bridge.sendValue(roles.probe, JSON.stringify(req));
+    } catch (e) {
+      clearTimeout(state.probe.timer);
+      state.probe = null;
+      state.probeResult = { request: req, kind, res: { ok: false, err: 'could not send: ' + e.message } };
+    }
+    renderTest();
+  }
+
+  function probeResultBlock(pr) {
+    const { request: req, kind, res } = pr;
+    const block = el('div', 'block');
+    const what = kind === 'scan'
+      ? 'Scan ids ' + req.scan[0] + '-' + req.scan[1] + (req.t === 'any' ? '' : ' · ' + TABLES[req.t])
+      : (kind === 'write' ? 'Write ' + req.w + ' to ' : 'Read ') + 'slave ' + req.s + ' · ' + TABLES[req.t] + ' ' + req.a;
+    const multiPort = req.p || (state.saved && state.saved.ports.length > 1) || (gatewayPorts() || 1) > 1;
+    block.appendChild(el('div', 'block-title', (multiPort ? portName(req.p || 0) + ' · ' : '') + what));
+
+    const ms = Number.isFinite(res.ms) ? ' · ' + res.ms + ' ms' : '';
+    if (!res.ok) {
+      const line = el('div', 'error-text');
+      line.appendChild(el('span', 'dot bad'));
+      line.appendChild(el('span', '', 'Failed: ' + (res.err || 'unknown error') + ms));
+      block.appendChild(line);
+      return block;
+    }
+
+    const line = el('div', 'error-text');
+    line.appendChild(el('span', 'dot ok'));
+    let summary = 'OK' + ms;
+    if (kind === 'scan') {
+      const found = Array.isArray(res.found) ? res.found : [];
+      const via = res.via || {};
+      const label = id => via[id] && TABLES[via[id]] ? id + ' (' + TABLES[via[id]].toLowerCase() + ')' : String(id);
+      summary = (found.length ? 'Found ' + found.map(label).join(', ') : 'No slave answered') + ms;
+    }
+    line.appendChild(el('span', '', summary));
+    block.appendChild(line);
+
+    if (kind === 'read' && Array.isArray(res.regs)) {
+      block.appendChild(registerTable(req, res.regs));
+      const actions = el('div', 'actions');
+      actions.appendChild(button('Add as point', 'btn', () => {
+        const port = req.p || 0;
+        if (port >= state.draft.ports.length) {
+          // Probed a port the config doesn't list yet: add it (and any before it)
+          while (state.draft.ports.length <= port) state.draft.ports.push(defaultPort());
+        }
+        switchTab('points');
+        openEditor(-1, { port, slave: req.s, table: req.t, addr: req.a });
+      }));
+      block.appendChild(actions);
+    }
+    return block;
+  }
+
+  // Show each word every plausible way, so the right type is easy to spot.
+  function registerTable(req, regs) {
+    const table = el('table', 'reg-table');
+    const head = el('tr');
+    const bits = isBitTable(req.t);
+    (bits ? ['Address', 'Value'] : ['Address', 'u16', 'i16', 'Hex']).forEach(h => head.appendChild(el('th', '', h)));
+    table.appendChild(head);
+    regs.forEach((w, i) => {
+      const tr = el('tr');
+      tr.appendChild(el('td', 'value', req.a + i));
+      if (bits) {
+        tr.appendChild(el('td', 'value', w ? '1' : '0'));
+      } else {
+        tr.appendChild(el('td', 'value', w));
+        tr.appendChild(el('td', 'value', w >= 0x8000 ? w - 0x10000 : w));
+        tr.appendChild(el('td', 'value', '0x' + w.toString(16).toUpperCase().padStart(4, '0')));
+      }
+      table.appendChild(tr);
+    });
+    if (!bits && regs.length >= 2) {
+      const wrap = el('div');
+      wrap.appendChild(table);
+      const pairs = el('table', 'reg-table');
+      pairs.style.marginTop = '10px';
+      const ph = el('tr');
+      ['Pair', 'u32 ABCD', 'i32 ABCD', 'f32 ABCD', 'f32 CDAB'].forEach(h => ph.appendChild(el('th', '', h)));
+      pairs.appendChild(ph);
+      for (let i = 0; i + 1 < regs.length; i += 2) {
+        const tr = el('tr');
+        tr.appendChild(el('td', 'value', (req.a + i) + '-' + (req.a + i + 1)));
+        const u = regs[i] * 65536 + regs[i + 1];
+        tr.appendChild(el('td', 'value', u));
+        tr.appendChild(el('td', 'value', u >= 0x80000000 ? u - 0x100000000 : u));
+        tr.appendChild(el('td', 'value', floatOf(regs[i], regs[i + 1])));
+        tr.appendChild(el('td', 'value', floatOf(regs[i + 1], regs[i])));
+        pairs.appendChild(tr);
+      }
+      wrap.appendChild(pairs);
+      return wrap;
+    }
+    return table;
+  }
+
+  function floatOf(hi, lo) {
+    const view = new DataView(new ArrayBuffer(4));
+    view.setUint16(0, hi);
+    view.setUint16(2, lo);
+    const f = view.getFloat32(0);
+    if (!Number.isFinite(f)) return '--';
+    return Math.abs(f) >= 1e7 || (f !== 0 && Math.abs(f) < 1e-4) ? f.toExponential(3) : formatNumber(f, '#.####');
+  }
+
+  /* ── 12. JSON tab ───────────────────────────────────────────────────────── */
+
+  function renderJson() {
+    const panel = $('panel-json');
+    clear(panel);
+    if (!state.draft) return;
+    const block = el('div', 'block');
+    block.appendChild(el('div', 'block-title', 'Config JSON'));
+    const area = el('textarea', 'input');
+    area.value = prettyConfig(state.draft);
+    area.spellcheck = false;
+    area.rows = Math.min(24, state.draft.pts.length + state.draft.ports.length * 2 + 7);
+    watchFocus(area);
+    block.appendChild(area);
+    const err = el('div', 'error-text');
+    block.appendChild(err);
+    const actions = el('div', 'actions');
+    actions.appendChild(button('Use this JSON', 'btn primary', () => {
+      let cfg;
+      try { cfg = parseConfig(area.value); } catch (e) { err.textContent = 'Invalid JSON: ' + e.message; return; }
+      const problem = validateConfig(cfg);
+      if (problem) { err.textContent = problem; return; }
+      cfg.rev = state.draft.rev;
+      state.draft = cfg;
+      closeEditor();
+      err.textContent = '';
+      renderAll();
+    }));
+    actions.appendChild(button('Copy', 'btn', () => {
+      area.select();
+      try { document.execCommand('copy'); } catch (e) { /* selection is enough */ }
+    }));
+    block.appendChild(actions);
+    panel.appendChild(block);
+    panel.appendChild(notice('', 'Format: docs/config-format.md. "ports" lists each RS485 port\'s settings and its points, in the gateway\'s port order; each point is [datastream, slave, table, address, type, scale, options]. A v1 config (one "bus") is accepted and saved as v2. Changes here stay a draft until you save.'));
+  }
+
+  /* ── 13. Save ───────────────────────────────────────────────────────────── */
+
+  function renderSaveBar() {
+    if (!state.draft) return;
+    const next = Object.assign({}, state.draft, { rev: state.base + 1 });
+    const size = serializeConfig(next).length;
+    const isDirty = dirty();
+    const gp = gatewayPorts();
+    const problem = validateConfig(state.draft) ||
+      (gp !== null && state.draft.ports.length > gp
+        ? 'This gateway has ' + gp + (gp === 1 ? ' port' : ' ports') + ': remove ' + portName(state.draft.ports.length - 1)
+        : '');
+    const fill = $('meterFill');
+    fill.style.width = Math.min(100, size / MAX_CHARS * 100) + '%';
+    fill.className = 'meter-fill' + (size > MAX_CHARS ? ' bad' : size > MAX_CHARS * 0.85 ? ' warn' : '');
+
+    let label = size + ' / ' + MAX_CHARS + ' chars';
+    if (state.saving) label = 'Saving rev ' + state.saving.rev + '…';
+    else if (size > MAX_CHARS) label = 'Too big to save: ' + label + '. Remove a point or options.';
+    else if (problem) label = problem;
+    else if (isDirty) label = 'Unsaved changes · ' + label;
+    else label = 'Saved · ' + label;
+    $('meterLabel').textContent = label;
+
+    $('saveBtn').disabled = !isDirty || !!problem || size > MAX_CHARS || !!state.saving || state.editing !== null || roles.config === undefined;
+    $('discardBtn').disabled = !isDirty || !!state.saving;
+  }
+
+  async function save() {
+    if (!dirty()) return;
+    // Re-read first so we never silently overwrite someone else's save.
+    const fresh = await bridge.getValue(roles.config).catch(() => null);
+    if (fresh) {
+      let freshCfg = null;
+      try { freshCfg = parseConfig(fresh.value); } catch (e) { /* unparseable: overwrite */ }
+      if (freshCfg && freshCfg.rev > state.base) {
+        state.saved = freshCfg;
+        state.conflict = freshCfg;
+        switchTab('points');
+        renderAll();
+        return;
+      }
+    }
+    const rev = state.base + 1;
+    const next = Object.assign({}, state.draft, { rev });
+    const text = serializeConfig(next);
+    if (text.length > MAX_CHARS) return;
+    try {
+      bridge.sendValue(roles.config, text);
+    } catch (e) {
+      $('meterLabel').textContent = 'Could not save: ' + e.message;
+      return;
+    }
+    state.draft.rev = rev;
+    state.base = rev;
+    // The push normally confirms; if it doesn't arrive, read the value back.
+    state.saving = {
+      rev,
+      timer: setTimeout(() => {
+        bridge.getValue(roles.config)
+          .then(v => onConfigValue(v.value))
+          .catch(() => { state.saving = null; renderSaveBar(); });
+      }, 4000),
+    };
+    renderSaveBar();
+    if (!live) previewSaved(text);
+  }
+
+  function discard() {
+    if (!state.saved) return;
+    state.draft = clone(state.saved);
+    state.base = state.saved.rev;
+    state.conflict = null;
+    closeEditor();
+    renderAll();
+  }
+
+  /* ── 14. Tabs, focus, render ────────────────────────────────────────────── */
+
+  function switchTab(name) {
+    state.tab = name;
+    document.querySelectorAll('.tab').forEach(t => t.setAttribute('aria-selected', String(t.dataset.tab === name)));
+    ['points', 'bus', 'test', 'json'].forEach(n => { $('panel-' + n).hidden = n !== name; });
+    if (name === 'json') renderJson();
+    if (name === 'bus') renderBus();
+    if (name === 'test') renderTest();
+    $('scroller').scrollTop = 0;
+  }
+
+  // iOS scrolls the document to reveal a focused field; undo that and keep the field visible.
+  let focusedField = null;
+  function resetDocumentScroll() {
+    if (window.scrollY) window.scrollTo(0, 0);
+    document.documentElement.scrollTop = 0;
+    document.body.scrollTop = 0;
+  }
+  function pinField() {
+    resetDocumentScroll();
+    if (!focusedField) return;
+    const scroller = $('scroller');
+    const margin = 8;
+    const ceiling = scroller.getBoundingClientRect().top + margin;
+    const floor = (window.visualViewport ? window.visualViewport.height : window.innerHeight) - margin;
+    const r = focusedField.getBoundingClientRect();
+    let delta = 0;
+    if (r.bottom > floor) delta = Math.min(r.bottom - floor, r.top - ceiling);
+    else if (r.top < ceiling) delta = r.top - ceiling;
+    if (Math.abs(delta) > 1) scroller.scrollTop += delta;
+  }
+  function watchFocus(input) {
+    input.addEventListener('focus', () => {
+      focusedField = input;
+      if (matchMedia('(hover: hover)').matches) return;
+      $('scroller').style.paddingBottom = '50vh';
+      const until = Date.now() + 1000;
+      const loop = () => { pinField(); if (focusedField === input && Date.now() < until) requestAnimationFrame(loop); };
+      requestAnimationFrame(loop);
+    });
+    input.addEventListener('blur', () => {
+      if (focusedField === input) focusedField = null;
+      $('scroller').style.paddingBottom = '';
+    });
+    input.addEventListener('input', () => { if (!matchMedia('(hover: hover)').matches) pinField(); });
+  }
+  window.addEventListener('scroll', resetDocumentScroll);
+  if (window.visualViewport) window.visualViewport.addEventListener('resize', pinField);
+
+  function renderAll() {
+    if (!state.draft) return;
+    showConsole();
+    renderHeader();
+    renderPointList();
+    if (state.tab === 'bus') renderBus();
+    if (state.tab === 'json') renderJson();
+    renderSaveBar();
+  }
+
+  function showConsole() {
+    $('message').hidden = true;
+    $('console').hidden = false;
+  }
+
+  function showMessage(text) {
+    $('message').textContent = text;
+    $('message').hidden = false;
+    $('console').hidden = true;
+  }
+
+  document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () => switchTab(t.dataset.tab)));
+  $('saveBtn').addEventListener('click', () => { save().catch(e => { $('meterLabel').textContent = 'Could not save: ' + e.message; }); });
+  $('discardBtn').addEventListener('click', discard);
+
+  /* ── 15. Boot ───────────────────────────────────────────────────────────── */
+
+  bridge.setCallbacks({
+    onValueUpdated: v => {
+      ingest(v);
+      updateLiveValues();
+    },
+    onError: text => bridge.log('onError: ' + text),
+    onThemeUpdated: applyTheme,
+  });
+
+  // Editor preview: a realistic config so the layout can be judged.
+  function previewData() {
+    const now = Math.floor(Date.now() / 1000);
+    return [
+      { index: 0, label: DS.config, type: 'STRING', value: '{"v":2,"rev":3,"poll_s":5,"ports":[{"baud":9600,"pts":[["Temperature",1,"ir",1,"i16",0.1],["Humidity",1,"ir",2,"u16",0.1]]},{"baud":9600,"pts":[["Relay",2,"hr",1,"u16",1,{"m":"w","map":{"1":256,"0":512}}]]}]}' },
+      { index: 1, label: DS.status, type: 'STRING', value: JSON.stringify({ rev: 3, cfg: 'ok', ts: now - 12, up: 86400 * 3, ports: 2, n: 3, bad: { Humidity: 'timeout' } }) },
+      { index: 2, label: DS.probe, type: 'STRING', value: '' },
+      { index: 3, label: DS.result, type: 'STRING', value: '' },
+      { index: 4, label: 'Temperature', type: 'DOUBLE', value: '21.4', suffix: '°C', decimalFormat: '#.#' },
+      { index: 5, label: 'Humidity', type: 'DOUBLE', value: '48.2', suffix: '%', decimalFormat: '#.#' },
+      { index: 6, label: 'Relay', type: 'INT', value: '1', suffix: '' },
+    ];
+  }
+
+  function previewSaved(text) {
+    setTimeout(() => ingest({ index: roles.config, label: DS.config, type: 'STRING', value: text }), 300);
+  }
+
+  // Hosts without device info (e.g. the asset editor) time out after 10 s and
+  // toast each time, so stop asking after the first failure.
+  let deviceInfoWorks = true;
+  function refreshDevice() {
+    if (typeof bridge.getDeviceInfo !== 'function' || !live || !deviceInfoWorks) return;
+    bridge.getDeviceInfo()
+      .then(info => { state.device = info; renderHeader(); })
+      .catch(() => { deviceInfoWorks = false; });
+  }
+
+  async function init() {
+    applyTheme(await bridge.getTheme().catch(() => null));
+
+    const initial = live ? await bridge.getValues().catch(() => null) : previewData();
+    if (initial === null) { showMessage('Could not load data'); return; }
+    if (initial.length === 0 && streams.size === 0) {
+      showMessage('No datastreams assigned. In the template\'s dashboard editor, open this widget\'s settings and add ModbusConfig, ModbusStatus, ModbusProbe, ModbusProbeResult and your point datastreams.');
+      return;
+    }
+    initial.forEach(v => { if (!streams.has(v.index)) streams.set(v.index, v); });
+    assignRoles();
+    if (roles.config === undefined) {
+      showMessage('Assign the ModbusConfig datastream (plus ModbusStatus, ModbusProbe, ModbusProbeResult and your point datastreams)');
+      return;
+    }
+    // Status/result first so the config render sees them.
+    if (roles.status !== undefined) state.status = parseJson(streams.get(roles.status).value);
+    onConfigValue(streams.get(roles.config).value);
+    refreshDevice();
+    // Keep "reported N ago" and online state fresh.
+    setInterval(() => { refreshDevice(); renderHeader(); }, 30000);
+  }
+
+  init().catch(e => { bridge.log('init failed: ' + e.message); showMessage('Could not load data'); });
+})();
+</script>
+</body>
+</html>

@@ -139,6 +139,30 @@ services:
   #   volumes:
   #     - /var/run/dbus:/var/run/dbus
 
+  # See examples/modbus-gateway/README.md - polls Modbus RTU slaves over
+  # RS485 and publishes them on this device's own identity (no
+  # AGENT_GATEWAY_ENABLED needed). Needs ModbusConfig/ModbusStatus/
+  # ModbusProbe/ModbusProbeResult datastreams (and one per configured
+  # point) created on this device's own template first, plus the bundled
+  # widget added to its dashboard - see the README. Fill in MODBUS_PORT for
+  # your actual RS485 adapter. Versioned and published independently of
+  # this project's own stack version - see examples/modbus-gateway/VERSION
+  # and .github/workflows/build-modbus-gateway.yml.
+  # modbus-gateway:
+  #   image: ghcr.io/anthony-blynk/modbus-gateway:1.0.0
+  #   restart: unless-stopped
+  #   depends_on:
+  #     - mqtt-bridge
+  #   environment:
+  #     - MODBUS_PORT=/dev/ttyUSB0
+  #   devices:
+  #     - "/dev/ttyUSB0:/dev/ttyUSB0"
+  #   volumes:
+  #     - modbus_gateway_data:/var/lib/modbus-gateway
+
 volumes:
   mqtt_bridge_data:
   mqtt_bridge_log:
+  # Uncomment alongside the modbus-gateway service above - it's what keeps
+  # the last accepted config and write-confirmed values across restarts.
+  # modbus_gateway_data:
