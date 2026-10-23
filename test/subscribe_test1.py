@@ -1,6 +1,12 @@
+"""downlink/ds/<name> itself is never delivered to an anonymous local
+subscriber - downlink/# is read-only to the agent's own credentialed
+connection (see README.md's Security section). local/blynk/downlink/ds/
+is the agent's anonymous-safe mirror of it - see README.md's "Testing the
+connection" section."""
+
 import paho.mqtt.client as mqtt
 
-TOPIC = "downlink/ds/Test1"
+TOPIC = "local/blynk/downlink/ds/Test1"
 
 
 def on_connect(client, userdata, flags, reason_code, properties):

@@ -476,6 +476,48 @@ class TestRunTerminalCommand:
         assert captured_cmd[-1] == "ls -la"
 
 
+class TestDownlinkRelay:
+    """_relay_downlink_ds - see TOPIC_LOCAL_DOWNLINK_DS_PREFIX's own
+    comment. Mirrors a cloud-pushed datastream write onto a local-only
+    topic a plain anonymous app can read, except this agent's own
+    reserved "Agent"-prefixed names."""
+
+    def test_ordinary_datastream_is_relayed(self, agent_instance):
+        agent_instance._on_message(None, None, FakeMessage("downlink/ds/ModbusConfig", "config text"))
+
+        agent_instance.client.publish.assert_called_once_with(
+            "local/blynk/downlink/ds/ModbusConfig", "config text", qos=1)
+
+    def test_agent_prefixed_name_is_not_relayed(self, agent_instance):
+        # AgentTerminal specifically carries real typed Remote Terminal
+        # commands - this is the one that must never leak to a local app.
+        agent_instance._on_message(None, None, FakeMessage("downlink/ds/AgentSomeFutureFeature", "x"))
+
+        agent_instance.client.publish.assert_not_called()
+
+    def test_sub_device_registry_topic_still_dispatches_instead_of_being_relayed(self, agent_instance, monkeypatch):
+        # Regression guard: AgentSubDeviceRegistry also starts with
+        # "downlink/ds/" - its own exact-topic branch must run instead of
+        # falling through to the generic relay.
+        monkeypatch.setattr(agent.gateway, "GATEWAY_CAPABILITY_ENABLED", True)
+        handler = MagicMock()
+        monkeypatch.setattr(agent_instance, "_handle_sub_device_registry", handler)
+
+        agent_instance._on_message(None, None, FakeMessage(agent.gateway.TOPIC_SUB_DEVICE_REGISTRY, "{}"))
+
+        handler.assert_called_once_with("{}")
+        agent_instance.client.publish.assert_not_called()
+
+    def test_agent_terminal_topic_still_dispatches_instead_of_being_relayed(self, agent_instance, monkeypatch):
+        monkeypatch.setattr(agent, "TERMINAL_CAPABILITY_ENABLED", True)
+        handler = MagicMock()
+        monkeypatch.setattr(agent_instance, "_handle_terminal_command", handler)
+
+        agent_instance._on_message(None, None, FakeMessage(agent.TOPIC_TERMINAL, "ls"))
+
+        handler.assert_called_once_with("ls")
+
+
 class TestOnMessageBinaryRouting:
     def test_upload_topic_bypasses_utf8_decode(self, agent_instance, monkeypatch):
         # Regression guard: raw file bytes are essentially never valid

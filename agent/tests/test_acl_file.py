@@ -38,6 +38,21 @@ class TestContentChangeDetection:
         assert "user blynk-bridge" in content
         assert "user blynk-agent" in content
 
+    def test_local_downlink_relay_topic_read_only_for_anonymous_write_only_for_agent(self, acl_file):
+        """See agent.TOPIC_LOCAL_DOWNLINK_DS_PREFIX - anonymous apps may
+        only read the relay topic (can't forge a fake downlink locally),
+        and only the agent's own identity may write it (it's the only
+        thing that ever relays onto it)."""
+        agent._write_acl_file(CREDS)
+        content = agent.ACL_FILE.read_text()
+        anonymous_section, _, rest = content.partition("\nuser ")
+        agent_section = rest[rest.index("blynk-agent"):]
+
+        assert "topic read local/blynk/downlink/#" in anonymous_section
+        assert "topic write local/blynk/downlink/#" not in anonymous_section
+        assert "topic write local/blynk/downlink/#" in agent_section
+        assert "topic read local/blynk/downlink/#" not in agent_section
+
     def test_unchanged_content_returns_false(self, acl_file):
         agent._write_acl_file(CREDS)  # first write
         assert agent._write_acl_file(CREDS) is False  # identical creds, no change

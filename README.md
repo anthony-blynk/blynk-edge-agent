@@ -77,6 +77,20 @@ Then you can publish to the Blynk datastream with:
 python3 -c "import paho.mqtt.publish as publish; publish.single('ds/Test', payload='42', hostname='localhost', port=1883, qos=1)"
 ```
 
+To receive a value Blynk pushes down to one of your own datastreams (a console edit, a Switch widget, an automation action), subscribe under `local/blynk/downlink/ds/` instead of `downlink/ds/` directly:
+```
+python3 -c "
+import paho.mqtt.client as mqtt
+def on_connect(client, userdata, flags, rc): client.subscribe('local/blynk/downlink/ds/#')
+client = mqtt.Client()
+client.on_connect = on_connect
+client.on_message = lambda c, u, m: print(f'{m.topic}: {m.payload.decode()}')
+client.connect('localhost', 1883)
+client.loop_forever()
+"
+```
+Note the `local/blynk/downlink/` in front of `ds/<name>` here, which isn't there when publishing above - that prefix is the one thing to remember: `downlink/ds/<name>` itself is never readable by local apps (see [Security](#security)), only the agent's own connection can read it; it mirrors anything that isn't one of its own reserved `Agent`-prefixed datastreams onto this local-only topic instead, so your own app can still receive its own pushed values, no credentials needed.
+
 Create a datastream named `Test` (type Integer) for the device's template first, or swap in any datastream you've already created. See `test/` for more complete pub/sub examples.
 
 ## WiFi provisioning
@@ -162,7 +176,7 @@ Verified end-to-end against a real Enterprise/QA Blynk server: a registered sub-
 
 This is a security-focused project - the local broker and the OTA path are both treated as trust boundaries:
 
-- **The local broker stays fully anonymous for ordinary traffic, but `downlink/#` is locked down.** Only mqtt-bridge's own local connection (write) and the agent's own local connection (read) can touch it, each authenticating with its own per-device credentials generated on first boot and never shared with anything else on the device. Without this, any local process could forge a fake OTA/reboot/terminal command just by publishing to the same topic the real bridge uses. Every other local topic (`ds/#`, `event/#`, etc.) stays anonymous - your own apps never need credentials to use Blynk.
+- **The local broker stays fully anonymous for ordinary traffic, but `downlink/#` is locked down.** Only mqtt-bridge's own local connection (write) and the agent's own local connection (read) can touch it, each authenticating with its own per-device credentials generated on first boot and never shared with anything else on the device. Without this, any local process could forge a fake OTA/reboot/terminal command just by publishing to the same topic the real bridge uses. Every other local topic (`ds/#`, `event/#`, etc.) stays anonymous - your own apps never need credentials to use Blynk. Since this also means an ordinary app can't receive a value Blynk pushes down to one of its own datastreams, the agent mirrors anything on `downlink/ds/<name>` that isn't one of its own reserved `Agent`-prefixed names onto `local/blynk/downlink/ds/<name>` instead, anonymous and read-only - see [Testing the connection](#testing-the-connection). The filtering is deliberate, not incidental: `downlink/ds/AgentTerminal` carries real typed Remote Terminal commands, and nothing but the agent itself should ever see those.
 - **Only mqtt-bridge and the agent ever hold a real Blynk auth token** (the agent needs it to render mqtt-bridge's own config, and to proxy file uploads - see [File uploads](#file-uploads)). Your own apps and anything else on the device only ever talk to the local broker - never the actual Blynk credentials. In [Gateway mode](#mqtt-gateway-sub-devices), this extends to each registered sub-device's own token too - those live in this device's `AgentSubDeviceRegistry` datastream and rendered bridge config, never in anything a local app representing that sub-device can read.
 - **The local broker is never exposed to the network** - it only listens on `127.0.0.1`, so nothing outside the device can reach it regardless of the ACL above.
 - **The cloud connection is TLS** (`mqttv5` over `8883`, with the CA bundle verified) - never plaintext.

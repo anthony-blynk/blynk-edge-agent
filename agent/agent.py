@@ -97,6 +97,21 @@ TOPIC_INFO = "info/mcu"
 TOPIC_LOCAL_UPLOAD_PREFIX = "local/blynk/upload/"
 TOPIC_LOCAL_UPLOAD_WILDCARD = "local/blynk/upload/#"
 TOPIC_LOCAL_UPLOAD_RESULT = "local/blynk/upload_result"
+# Mirrors a cloud-pushed datastream write for a local app's own use - see
+# _on_message. downlink/ds/# itself stays agent-only (anonymous clients
+# could otherwise forge an OTA/reboot/terminal command by publishing
+# straight to downlink/#), so an app that needs to receive a value pushed
+# to one of its own datastreams (a console edit, a Switch widget, an
+# automation) can't subscribe to that directly - this agent, which already
+# reads it, republishes it here instead. "Agent"-prefixed names are
+# deliberately never relayed: they're this agent's own reserved namespace
+# (AgentTerminal, AgentTerminalEnabled, AgentDiagnosticsEnabled,
+# AgentSubDeviceRegistry, and any future one) - AgentTerminal in particular
+# carries real typed Remote Terminal commands, which must stay visible to
+# nothing but this agent.
+TOPIC_DOWNLINK_DS_PREFIX = "downlink/ds/"
+TOPIC_LOCAL_DOWNLINK_DS_PREFIX = "local/blynk/downlink/ds/"
+RESERVED_DS_PREFIX = "Agent"
 
 RECONNECT_DELAY = 1
 MAX_RECONNECT_DELAY = 60
@@ -190,6 +205,7 @@ topic readwrite get/#
 topic readwrite meta/#
 topic readwrite local/blynk/upload/#
 topic readwrite local/blynk/upload_result
+topic read local/blynk/downlink/#
 {sub_device_anonymous_block}
 # The bridge's own local-side connection needs the same general access as
 # anonymous clients (it subscribes locally to ds/# etc. to forward them up
@@ -214,7 +230,10 @@ topic write downlink/#
 # upload proxy topics: the agent only ever consumes local/blynk/upload/#
 # (a local app writes the request) and only ever produces
 # local/blynk/upload_result (a local app reads the reply) - never the
-# other direction for either one.
+# other direction for either one. Also write-only on local/blynk/downlink/#
+# - the mirror of (a filtered subset of) downlink/ds/# this agent publishes
+# for ordinary local apps to read (see TOPIC_LOCAL_DOWNLINK_DS_PREFIX) -
+# deliberately not also read here, this agent only ever produces it.
 user {agent_username}
 topic readwrite ds/#
 topic readwrite batch_ds
@@ -225,6 +244,7 @@ topic readwrite meta/#
 topic read downlink/#
 topic read local/blynk/upload/#
 topic write local/blynk/upload_result
+topic write local/blynk/downlink/#
 {sub_device_agent_line}{gw_agent_lines}"""
 
 
@@ -1276,8 +1296,22 @@ class BlynkAgent:
             self._handle_sub_device_traffic(message.topic, payload)
         elif gateway.GATEWAY_CAPABILITY_ENABLED and message.topic.startswith(gateway.GW_TOPIC_PREFIX):
             self._handle_gw_downlink(message.topic, payload)
+        elif message.topic.startswith(TOPIC_DOWNLINK_DS_PREFIX):
+            self._relay_downlink_ds(message.topic[len(TOPIC_DOWNLINK_DS_PREFIX):], payload)
         else:
             logger.debug(f"Unhandled message on {message.topic}: {payload}")
+
+    def _relay_downlink_ds(self, name: str, payload: str) -> None:
+        """See TOPIC_LOCAL_DOWNLINK_DS_PREFIX's own comment - mirrors a
+        cloud-pushed datastream write onto a local-only topic a plain
+        anonymous app can subscribe to, skipping this agent's own reserved
+        names (already handled by their own exact-topic branches above,
+        this is just a second, name-based backstop so nothing with an
+        "Agent"-prefixed name is ever relayed regardless of capability
+        flags or future additions to this agent's own namespace)."""
+        if not name or name.startswith(RESERVED_DS_PREFIX):
+            return
+        self.client.publish(f"{TOPIC_LOCAL_DOWNLINK_DS_PREFIX}{name}", payload, qos=1)
 
     def _handle_ota_update(self, json_payload: str) -> None:
         try:
