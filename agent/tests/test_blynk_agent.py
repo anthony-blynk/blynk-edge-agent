@@ -24,6 +24,7 @@ def agent_instance(tmp_path, monkeypatch):
     monkeypatch.setattr(agent, "LOCAL_BROKER_CREDS_FILE", tmp_path / "local_broker_creds.env")
     config = MagicMock()
     config.template_id = "TMPL123"
+    config.auth_token = "test-auth-token"
     compose_manager = MagicMock()
     bridge = MagicMock()
     instance = agent.BlynkAgent(config, compose_manager, bridge)
@@ -201,14 +202,16 @@ class TestBridgeStateAndWatchdog:
 
         agent_instance.bridge.refresh_dns.assert_not_called()
 
-    def test_watchdog_does_not_fire_before_dns_refresh_threshold(self, agent_instance):
+    def test_watchdog_does_not_fire_before_dns_refresh_threshold(self, agent_instance, monkeypatch):
+        monkeypatch.setattr(agent_instance, "_probe_cloud_reachable", MagicMock(return_value=False))
         agent_instance._bridge_disconnected_since = time.time() - 10  # well under 90s
 
         agent_instance._check_connectivity_watchdog()
 
         agent_instance.bridge.refresh_dns.assert_not_called()
 
-    def test_watchdog_fires_dns_refresh_once_past_threshold(self, agent_instance):
+    def test_watchdog_fires_dns_refresh_once_past_threshold(self, agent_instance, monkeypatch):
+        monkeypatch.setattr(agent_instance, "_probe_cloud_reachable", MagicMock(return_value=False))
         agent_instance._bridge_disconnected_since = time.time() - (agent.BRIDGE_DNS_REFRESH_GRACE_PERIOD + 1)
 
         agent_instance._check_connectivity_watchdog()
@@ -216,7 +219,8 @@ class TestBridgeStateAndWatchdog:
         agent_instance.bridge.refresh_dns.assert_called_once()
         assert agent_instance._bridge_dns_refresh_attempted is True
 
-    def test_watchdog_does_not_refresh_dns_twice_for_same_outage(self, agent_instance):
+    def test_watchdog_does_not_refresh_dns_twice_for_same_outage(self, agent_instance, monkeypatch):
+        monkeypatch.setattr(agent_instance, "_probe_cloud_reachable", MagicMock(return_value=False))
         agent_instance._bridge_disconnected_since = time.time() - (agent.BRIDGE_DNS_REFRESH_GRACE_PERIOD + 1)
 
         agent_instance._check_connectivity_watchdog()
@@ -225,6 +229,7 @@ class TestBridgeStateAndWatchdog:
         agent_instance.bridge.refresh_dns.assert_called_once()
 
     def test_watchdog_reprovisions_past_full_grace_period(self, agent_instance, monkeypatch):
+        monkeypatch.setattr(agent_instance, "_probe_cloud_reachable", MagicMock(return_value=False))
         start_reprovisioning = MagicMock()
         monkeypatch.setattr(agent_instance, "_start_reprovisioning", start_reprovisioning)
         agent_instance._bridge_disconnected_since = time.time() - (agent.BRIDGE_DISCONNECT_GRACE_PERIOD + 1)
@@ -234,6 +239,7 @@ class TestBridgeStateAndWatchdog:
         start_reprovisioning.assert_called_once()
 
     def test_watchdog_does_not_reprovision_before_full_grace_period(self, agent_instance, monkeypatch):
+        monkeypatch.setattr(agent_instance, "_probe_cloud_reachable", MagicMock(return_value=False))
         start_reprovisioning = MagicMock()
         monkeypatch.setattr(agent_instance, "_start_reprovisioning", start_reprovisioning)
         # past the DNS-refresh threshold but not the full reprovisioning one
@@ -241,6 +247,25 @@ class TestBridgeStateAndWatchdog:
 
         agent_instance._check_connectivity_watchdog()
 
+        start_reprovisioning.assert_not_called()
+
+    def test_watchdog_clears_state_via_probe_instead_of_escalating(self, agent_instance, monkeypatch):
+        # The new behavior this class exists to cover: a probe success on
+        # any tick clears the presumed-disconnected state immediately,
+        # skipping both the DNS-refresh restart and BLE reprovisioning -
+        # even well past both grace periods - instead of only being caught
+        # once, racily, in _on_connect right after a restart.
+        monkeypatch.setattr(agent_instance, "_probe_cloud_reachable", MagicMock(return_value=True))
+        start_reprovisioning = MagicMock()
+        monkeypatch.setattr(agent_instance, "_start_reprovisioning", start_reprovisioning)
+        agent_instance._bridge_disconnected_since = time.time() - (agent.BRIDGE_DISCONNECT_GRACE_PERIOD + 1)
+        agent_instance._bridge_dns_refresh_attempted = True
+
+        agent_instance._check_connectivity_watchdog()
+
+        assert agent_instance._bridge_disconnected_since is None
+        assert agent_instance._bridge_dns_refresh_attempted is False
+        agent_instance.bridge.refresh_dns.assert_not_called()
         start_reprovisioning.assert_not_called()
 
 

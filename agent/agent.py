@@ -149,6 +149,23 @@ BRIDGE_DNS_REFRESH_GRACE_PERIOD = 90
 # mosquitto's own bridge-state notification.
 BLYNK_CLOUD_MQTT_PORT = 8883
 
+def bridge_client_id(template_id: str, auth_token: str) -> str:
+    """remote_clientid for this device's cloud bridge connection - must be
+    unique per device, not just per template: Blynk Cloud's broker (like
+    any MQTT broker) disconnects whichever session currently holds a
+    client ID when a new connection presents the same one. Using only the
+    template id here previously meant every device sharing one template
+    rendered the exact same string - harmless in practice only because
+    Blynk's broker appears to key sessions by the auth token instead, not
+    actually enforce client-id uniqueness; still worth not relying on. A
+    short hash of the auth token (the one genuinely per-device value
+    available at render time) gives a stable, unique-enough suffix without
+    putting the real token in a string that's logged in plaintext on every
+    bridge connect/reconnect."""
+    suffix = hashlib.sha256(auth_token.encode()).hexdigest()[:8]
+    return f"blynk-bridge-{template_id}-{suffix}"
+
+
 BRIDGE_TEMPLATE = """\
 connection blynk-cloud
 address {server}:8883
@@ -158,7 +175,7 @@ address {server}:8883
 bridge_protocol_version mqttv50
 remote_username device
 remote_password {token}
-remote_clientid blynk-bridge-{template_id}
+remote_clientid {client_id}
 bridge_cafile /etc/ssl/certs/ca-certificates.crt
 cleansession true
 # Published locally (retained) to $SYS/broker/connection/<remote_clientid>/state
@@ -452,7 +469,7 @@ class MqttBridge:
         rendered = BRIDGE_TEMPLATE.format(
             server=server,
             token=self.config.auth_token,
-            template_id=self.config.template_id,
+            client_id=bridge_client_id(self.config.template_id, self.config.auth_token),
             gateway_connection_block=gateway_connection_block,
             local_username=creds["BRIDGE_LOCAL_USERNAME"],
             local_password=creds["BRIDGE_LOCAL_PASSWORD"],
@@ -1131,10 +1148,13 @@ class BlynkAgent:
         self._shutting_down = False
         self.last_cloud_contact: Optional[float] = None
         self.diagnostics_enabled = True  # on by default until told otherwise via get/ds on connect
-        # Mirrors BRIDGE_TEMPLATE's remote_clientid - see the notifications
-        # comment there for why this topic tells us the cloud bridge's own
-        # connection state, not just this container's local-broker link.
-        self._bridge_state_topic = f"$SYS/broker/connection/blynk-bridge-{config.template_id}/state"
+        # Mirrors BRIDGE_TEMPLATE's remote_clientid (via bridge_client_id) -
+        # see the notifications comment there for why this topic tells us
+        # the cloud bridge's own connection state, not just this
+        # container's local-broker link.
+        self._bridge_state_topic = (
+            f"$SYS/broker/connection/{bridge_client_id(config.template_id, config.auth_token)}/state"
+        )
         # Starts as "now", not None - confirmed against mosquitto's own
         # upstream source (bridge__connect_step1, v2.1.2) that a bridge's
         # very first-ever connect attempt queues its "0" notification via
@@ -1455,6 +1475,21 @@ class BlynkAgent:
         # feature is retained-on-change, not periodic), so something has to
         # poll elapsed time against BRIDGE_DISCONNECT_GRACE_PERIOD.
         if self._bridge_disconnected_since is None or self._reprovisioning:
+            return
+        # Re-check reality before acting, every tick - not just once in
+        # _on_connect. That one-shot probe fires in the same narrow window
+        # as the local-broker reconnect it's riding on, which can itself
+        # race mosquitto's own bridge coming back up; missing that single
+        # window previously meant nothing caught a false positive again
+        # until the next disruptive escalation (a restart, then BLE
+        # reprovisioning) - each of which causes another real local
+        # disconnect, perpetuating the exact loop this is meant to break.
+        # A plain outage-reachable check every 60s gives it repeated
+        # chances to notice the connection is actually fine first.
+        if self._probe_cloud_reachable():
+            logger.info("Blynk cloud reachable via direct probe - clearing presumed-disconnected state")
+            self._bridge_disconnected_since = None
+            self._bridge_dns_refresh_attempted = False
             return
         outage = time.time() - self._bridge_disconnected_since
 

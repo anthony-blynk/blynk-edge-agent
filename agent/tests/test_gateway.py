@@ -380,6 +380,53 @@ class TestBuildGatewayConnectionBlock:
         assert rendered == ""
 
 
+class TestBridgeClientId:
+    """bridge_client_id - must be unique per device, not just per template,
+    since several devices commonly share one Blynk template (see
+    agent.py's own comment on it for why)."""
+
+    def test_deterministic_for_the_same_inputs(self):
+        assert agent.bridge_client_id("TMPL123", "TOKEN_A") == agent.bridge_client_id("TMPL123", "TOKEN_A")
+
+    def test_differs_between_tokens_sharing_a_template(self):
+        a = agent.bridge_client_id("TMPL123", "TOKEN_A")
+        b = agent.bridge_client_id("TMPL123", "TOKEN_B")
+        assert a != b
+        assert a.startswith("blynk-bridge-TMPL123-")
+        assert b.startswith("blynk-bridge-TMPL123-")
+
+    def test_rendered_bridge_conf_uses_the_per_device_client_id(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(agent, "BRIDGE_CONF_DIR", tmp_path / "conf.d")
+        monkeypatch.setattr(agent, "BRIDGE_CONF_FILE", tmp_path / "conf.d" / "blynk-bridge.conf")
+        monkeypatch.setattr(agent, "ACL_FILE", tmp_path / "conf.d" / "acl.rules")
+        monkeypatch.setattr(agent, "LOCAL_BROKER_CREDS_FILE", tmp_path / "local_broker_creds.env")
+        monkeypatch.setattr(agent.os, "chown", MagicMock(), raising=False)
+        config = MagicMock()
+        config.effective_server.return_value = "fra1.blynk.cloud"
+        config.auth_token = "TOKEN_A"
+        config.template_id = "TMPL123"
+        bridge = agent.MqttBridge(config=config)
+        monkeypatch.setattr(bridge, "_restart_mqtt_bridge", MagicMock())
+
+        bridge.ensure_current()
+
+        content = agent.BRIDGE_CONF_FILE.read_text()
+        expected = agent.bridge_client_id("TMPL123", "TOKEN_A")
+        assert f"remote_clientid {expected}" in content
+        assert "remote_clientid blynk-bridge-TMPL123\n" not in content  # the old, non-unique form
+
+    def test_agent_bridge_state_topic_matches_the_same_client_id(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(agent, "LOCAL_BROKER_CREDS_FILE", tmp_path / "local_broker_creds.env")
+        config = MagicMock()
+        config.template_id = "TMPL123"
+        config.auth_token = "TOKEN_A"
+        instance = agent.BlynkAgent(config, MagicMock(), MagicMock())
+        instance.client = MagicMock()
+
+        expected = agent.bridge_client_id("TMPL123", "TOKEN_A")
+        assert instance._bridge_state_topic == f"$SYS/broker/connection/{expected}/state"
+
+
 class TestMqttBridgeEnsureCurrentGatewayUsername:
     """Regression coverage for the separate gateway bridge connection: it's
     only rendered (as its own "connection blynk-gateway" block, mgmt_device
@@ -536,6 +583,7 @@ class TestBlynkAgentGatewayIntegration:
         monkeypatch.setattr(agent, "LOCAL_BROKER_CREDS_FILE", tmp_path / "local_broker_creds.env")
         config = MagicMock()
         config.template_id = "TMPL123"
+        config.auth_token = "test-auth-token"
         bridge = agent.MqttBridge(config=config)
         instance = agent.BlynkAgent(config, MagicMock(), bridge)
         instance.client = MagicMock()
@@ -716,6 +764,7 @@ class TestHandleGwDownlink:
         monkeypatch.setattr(agent, "LOCAL_BROKER_CREDS_FILE", tmp_path / "local_broker_creds.env")
         config = MagicMock()
         config.template_id = "TMPL123"
+        config.auth_token = "test-auth-token"
         bridge = agent.MqttBridge(config=config)
         instance = agent.BlynkAgent(config, MagicMock(), bridge)
         instance.client = MagicMock()
