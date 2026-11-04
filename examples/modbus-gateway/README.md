@@ -23,9 +23,14 @@ project.
    default value `{"v":2,"rev":0,"poll_s":5,"ports":[{"baud":9600,"pts":[]}]}`
    - Blynk doesn't answer `get/ds` without one), `ModbusStatus` (String),
    `ModbusProbe` (String), `ModbusProbeResult` (String), plus one datastream
-   (String, unless you know you want Double) per point you plan to add
-   (e.g. `Temperature`, `Humidity`, `Relay`) - datastreams can't be created
-   from the widget at runtime.
+   per point you plan to add - String is fine for a read-only sensor like
+   `Temperature`/`Humidity` (the gateway always publishes a formatted
+   string regardless), but a point you want to bind to a Switch widget
+   (e.g. `Relay`) needs an **Integer** datastream (0-1) - Blynk's Switch
+   widget won't assign to a String one, confirmed on real hardware; the
+   gateway's write still arrives as plain MQTT text either way, so this is
+   just a Blynk-side schema choice, not something the gateway cares about.
+   Datastreams can't be created from the widget at runtime.
 2. **The widget**, added to this template's dashboard: in the web console's
    dashboard editor, add a Web Console / HTML widget and paste in
    [`widget/modbus-console.html`](widget/modbus-console.html), then open its
