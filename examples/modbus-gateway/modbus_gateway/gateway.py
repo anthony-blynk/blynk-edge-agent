@@ -422,7 +422,12 @@ class Gateway:
             next_due = min((t for n, t in self._next_due.items()
                             if port is None or self.config.point(n).port == port),
                            default=now + MAX_IDLE_SECONDS)
-            status_due = (self._last_status or now) + STATUS_REFRESH_SECONDS
+            # Status is only sent while connected, so offline it never stops
+            # being due: counting it made this return 0 over and over (a
+            # spinning poll thread for the whole outage). on_connected()
+            # publishes a fresh one
+            last = self._last_status if self._connected() else None
+            status_due = (last or now) + STATUS_REFRESH_SECONDS
         return max(0.0, min(next_due - now, status_due - now, MAX_IDLE_SECONDS))
 
     def run_forever(self, stop: threading.Event, on_tick=None) -> None:
