@@ -107,6 +107,9 @@ class Gateway:
         self._saved_runtime: Optional[dict] = None
         # Every port's poll thread and paho's thread can save it
         self._runtime_lock = threading.Lock()
+        # Held from reading a port's settings to configuring its bus, so a
+        # scan ending as a new config lands can't put the old settings back
+        self._bus_config_lock = threading.Lock()
 
         self._load_state()
         self._load_runtime()
@@ -190,9 +193,11 @@ class Gateway:
             ports = self.config.ports
         return ports[port] if port < len(ports) else BusSettings()
 
-    def _configure_buses(self) -> None:
-        for port, bus in enumerate(self.buses):
-            bus.configure(self._port_settings(port))
+    def _configure_buses(self, only: Optional[int] = None) -> None:
+        with self._bus_config_lock:
+            for port, bus in enumerate(self.buses):
+                if only is None or port == only:
+                    bus.configure(self._port_settings(port))
 
     def apply_config(self, payload: str, persist: bool = True) -> bool:
         try:
@@ -649,7 +654,10 @@ class Gateway:
                             via[str(slave)] = table
                             break
                 finally:
-                    bus.configure(normal)
+                    # From the config as it is now, not `normal`: a new
+                    # config applied during the scan (MQTT thread) must
+                    # stay applied
+                    self._configure_buses(probe.port)
                 result["found"] = found
                 result["via"] = via
         except BusError as e:
